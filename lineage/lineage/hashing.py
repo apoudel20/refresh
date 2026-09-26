@@ -81,6 +81,28 @@ def structure_hash(ns: str, nodes: dict, edges: list) -> str:
     return H("structure", ns, sorted(nodes.values()), e)
 
 
+VEC_DIMS = 64
+
+
+def _unit(v):
+    n = sum(x * x for x in v) ** 0.5 or 1.0
+    return [round(x / n, 6) for x in v]
+
+
+def trait_vec(role, tools) -> list:
+    """An agent's traits (role, tools) feature-hashed into 64 buckets, L2-normalized: the space $vectorSearch compares in."""
+    v = [0.0] * VEC_DIMS
+    for f in [f"role:{role}"] + [f"tool:{t}" for t in sorted(set(tools))]:
+        v[int(hashlib.sha256(f.encode()).hexdigest(), 16) % VEC_DIMS] += 1.0
+    return _unit(v)
+
+
+def structure_vec(agents) -> list:
+    """Mean trait vector of a structure's agents ([{role, tools}]), re-normalized for cosine."""
+    vs = [trait_vec(a["role"], a["tools"]) for a in agents]
+    return _unit([sum(col) / len(vs) for col in zip(*vs)])
+
+
 def tool_sig(tool_id, version, args, input_hashes) -> str:
     return H("tool", tool_id, version, args, sorted(input_hashes))
 

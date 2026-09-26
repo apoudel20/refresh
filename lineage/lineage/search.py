@@ -3,10 +3,12 @@ import argparse
 import pathlib
 import time
 
+from pymongo.errors import PyMongoError
+
 from .generator import Generator
-from .hashing import H, content_hash, namespace, structure_hash
+from .hashing import H, content_hash, namespace, structure_hash, structure_vec
 from .runner import Runner
-from .store import ensure_indexes, get_db, log, record_fitness
+from .store import ensure_indexes, ensure_vector_indexes, get_db, log, record_fitness
 from .workbench import make_workbench
 
 
@@ -20,9 +22,28 @@ def gate(db, scope, s_hash, elite_hashes):
     return f"tried in gen {doc.get('generation')}"
 
 
+NEAR_DUP = 0.97  # cosine similarity of mean trait vectors
+
+
+def near_dup(db, scope, s_hash, vec):
+    """Atlas $vectorSearch over evaluated structures in this scope. Returns the closest one if cosine >= NEAR_DUP."""
+    try:
+        for d in db.structures.aggregate([
+                {"$vectorSearch": {"index": "struct_vec", "path": "trait_vec", "queryVector": vec,
+                                   "numCandidates": 50, "limit": 3, "filter": {"scope": scope}}},
+                {"$project": {"structure_hash": 1, "generation": 1, "score": {"$meta": "vectorSearchScore"}}}]):
+            if d["structure_hash"] != s_hash:
+                d["cosine"] = 2 * d["score"] - 1  # Atlas reports cosine as (1 + cos) / 2
+                return d if d["cosine"] >= NEAR_DUP else None
+    except PyMongoError as e:
+        print(f"$vectorSearch failed ({e}); allowing")
+    return None
+
+
 def search(scope, memory, generations, k, workbench, task_id, task_input, seed=0, model=None, db=None):
     db = db if db is not None else get_db()
     ensure_indexes(db)
+    vec_gate = memory and ensure_vector_indexes(db)
     registry = workbench.tools()
     task_hash = content_hash(pathlib.Path(task_input).read_bytes() if pathlib.Path(task_input).is_file() else task_input)
     ns = namespace(task_id, task_hash, workbench.eval_version, H(registry))
@@ -30,7 +51,7 @@ def search(scope, memory, generations, k, workbench, task_id, task_input, seed=0
     gen0 = 1 + max([d.get("generation", -1) for d in db.structures.find({"scope": scope}, {"generation": 1})], default=-1)
     gen_ = Generator(db, scope, registry, memory, seed=seed + gen0, model=model)
     runner = Runner(db, workbench, scope, ns, registry, use_cache=memory)
-    log(db, scope, "resume" if gen0 else "search_started", memory=memory, gen=gen0)
+    log(db, scope, "resume" if gen0 else "search_started", memory=memory, gen=gen0, vector_gate=vec_gate)
     for gen in range(gen0, gen0 + generations):
         elite_hashes = {e["structure_hash"] for e in gen_.elites()} if memory else set()
         this_gen = []
@@ -50,6 +71,12 @@ def search(scope, memory, generations, k, workbench, task_id, task_input, seed=0
                     log(db, scope, "blocked", gen=gen, structure_hash=s_hash, reason=reason, origin=cand["origin"],
                         nodes=node_docs, edges=cand["edges"])
                     continue
+                dup = vec_gate and not existing and near_dup(db, scope, s_hash, structure_vec(node_docs))
+                if dup:
+                    log(db, scope, "near_dup", gen=gen, structure_hash=s_hash, similar_to=dup["structure_hash"],
+                        score=round(dup["cosine"], 3), reason=f"~{dup['structure_hash'][:8]} gen {dup.get('generation')}",
+                        origin=cand["origin"], nodes=node_docs, edges=cand["edges"])
+                    continue
             elif existing:
                 log(db, scope, "repeat", gen=gen, structure_hash=s_hash, first_gen=existing.get("generation"))
             db.structures.update_one({"scope": scope, "structure_hash": s_hash}, {"$setOnInsert": {
@@ -62,7 +89,8 @@ def search(scope, memory, generations, k, workbench, task_id, task_input, seed=0
             ev = workbench.evaluate(task_id, s_hash, sinks)
             fit = record_fitness(db, scope, s_hash, ev["fitness"])
             db.structures.update_one({"scope": scope, "structure_hash": s_hash},
-                                     {"$set": {"metrics": ev.get("metrics"), "per_node": ev.get("per_node"), "cost_usd": cost}})
+                                     {"$set": {"metrics": ev.get("metrics"), "per_node": ev.get("per_node"), "cost_usd": cost,
+                                              "trait_vec": structure_vec(node_docs)}})
             log(db, scope, "eval", gen=gen, structure_hash=s_hash, fitness=ev["fitness"], mean=fit["mean"], n=fit["n"], cost_usd=cost)
             this_gen.append({**cand, "structure_hash": s_hash, "fitness": ev["fitness"]})
         gen_.last_gen = this_gen or gen_.last_gen
