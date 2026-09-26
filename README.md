@@ -149,9 +149,9 @@ Suggested first connection order:
 
 ## What already works without the backend
 
-- Project names, source images, model metadata, and iteration history persist in this browser's IndexedDB. They do not sync to a server or another device.
+- Project names, source images, generated/refined GLBs, sculpted GLBs, pending selections, and iteration history persist in this browser's IndexedDB. Generated model URLs are cached as local GLB blobs so reopening or switching projects restores each model without depending on a still-valid signed URL. Projects do not sync to a server or another device.
 - Camera capture and image upload are local until the user starts a reconstruction.
-- Hand landmarks, pinch detection, approximate hand-distance estimation, viewport brush, and local mesh deformation run in the browser.
+- Hand landmarks use adaptive 1€ filtering with pinch hysteresis; hand distance estimates also control sculpt depth. Pinch starts a fixed surface grab, then applies capped 1:1 hand displacement to a smooth radial set of mesh vertices. The camera never moves from hand input, and releasing ends the deformation.
 - The separate pigeon demo exercises hand tracking and local sculpting without the reconstruction API.
 - MediaPipe runtime files are served locally from `public/mediapipe/wasm`; the hand-landmarker model is `public/assets/hand_landmarker.task`.
 

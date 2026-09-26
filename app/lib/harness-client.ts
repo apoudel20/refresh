@@ -11,7 +11,7 @@ function baseUrl() {
   return process.env.NEXT_PUBLIC_REFRESH_API_URL?.replace(/\/$/, "") || "";
 }
 
-export async function startReconstruction(projectId: string, files: File[], onUpdate: (update: RunUpdate) => void, signal: AbortSignal) {
+export async function startReconstruction(projectId: string, files: File[], onUpdate: (update: RunUpdate) => void | Promise<void>, signal: AbortSignal) {
   const base = baseUrl();
   if (!base) throw new Error("Set NEXT_PUBLIC_REFRESH_API_URL to connect the reconstruction service.");
   const body = new FormData();
@@ -21,19 +21,22 @@ export async function startReconstruction(projectId: string, files: File[], onUp
   if (!response.ok) throw new Error(`Reconstruction service returned ${response.status}.`);
   const result = await response.json() as { runId: string; modelId?: string; modelUrl?: string; eventsUrl?: string };
   if (!result.runId) throw new Error("The reconstruction service did not return a runId.");
-  if (result.modelUrl) onUpdate({ type: "model", modelUrl: result.modelUrl, modelId: result.modelId, status: "Model ready" });
+  if (result.modelUrl) await onUpdate({ type: "model", modelUrl: result.modelUrl, modelId: result.modelId, status: "Model ready" });
   if (result.eventsUrl) {
     await new Promise<void>((resolve, reject) => {
       const events = new EventSource(new URL(result.eventsUrl!, base).toString());
       const finish = () => { events.close(); resolve(); };
-      events.onmessage = message => {
+      events.onmessage = async message => {
         if (message.data === "[DONE]") { finish(); return; }
         try {
           const update = JSON.parse(message.data) as RunUpdate;
-          onUpdate(update);
+          await onUpdate(update);
           if (update.type === "model" && update.modelUrl) finish();
           if (update.type === "error") { events.close(); reject(new Error(update.message || "Reconstruction failed.")); }
-        } catch { /* Ignore non-JSON keepalives. */ }
+        } catch (error) {
+          if (error instanceof SyntaxError) return; // Ignore non-JSON keepalives.
+          events.close(); reject(error instanceof Error ? error : new Error("Could not process a reconstruction update."));
+        }
       };
       events.onerror = () => { events.close(); reject(new Error("Lost the reconstruction event stream.")); };
       signal.addEventListener("abort", () => { events.close(); reject(new DOMException("Run cancelled", "AbortError")); }, { once: true });

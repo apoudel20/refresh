@@ -9,8 +9,8 @@ import { deleteProject, listProjects, newProject, type ProjectEvent, type Projec
 type Screen = "dashboard" | "project";
 type Stage = "intake" | "processing" | "studio";
 
-const clockLabel = (time: number) => new Date(time).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 const eventId = () => crypto.randomUUID();
+const currentTimestamp = () => Date.now();
 
 function summarizeStatus(value?: string) {
   const status = (value || "").toLowerCase();
@@ -36,6 +36,8 @@ export default function Home() {
   const [previews, setPreviews] = useState<Array<{ id: string; name: string; url: string }>>([]);
   const [dashboardImages, setDashboardImages] = useState<File[]>([]);
   const [dashboardPreviews, setDashboardPreviews] = useState<Array<{ file: File; url: string }>>([]);
+  const dashboardPreviewUrlsRef = useRef<Array<{ file: File; url: string }>>([]);
+  const referencePreviewUrlsRef = useRef<Array<{ id: string; name: string; url: string }>>([]);
   const [error, setError] = useState("");
   const [refining, setRefining] = useState(false);
   const [lastSelection, setLastSelection] = useState<SelectionPacket | null>(null);
@@ -51,41 +53,91 @@ export default function Home() {
 
   useEffect(() => { void listProjects().then(setProjects).catch(() => setError("Local project storage is unavailable in this browser.")); }, []);
   useEffect(() => { projectRef.current = project; }, [project]);
-  useEffect(() => {
-    const items = dashboardImages.map(file => ({ file, url: URL.createObjectURL(file) }));
-    setDashboardPreviews(items);
-    return () => items.forEach(item => URL.revokeObjectURL(item.url));
-  }, [dashboardImages]);
-  useEffect(() => {
-    if (!project) { setPreviews([]); return; }
-    const next = project.references.map(asset => ({ id: asset.id, name: asset.name, url: URL.createObjectURL(asset.blob) }));
-    setPreviews(next);
-    return () => next.forEach(preview => URL.revokeObjectURL(preview.url));
-  }, [project]);
-  useEffect(() => {
-    if (!project?.modelBlob || project.modelUrl) { setLocalModelUrl(""); return; }
-    const url = URL.createObjectURL(project.modelBlob);
-    localModelUrlRef.current = url; setLocalModelUrl(url);
-    return () => { URL.revokeObjectURL(url); if (localModelUrlRef.current === url) localModelUrlRef.current = ""; };
-  }, [project?.id, project?.modelBlob, project?.modelUrl]);
-  useEffect(() => () => { runAbortRef.current?.abort(); if (localModelUrlRef.current) URL.revokeObjectURL(localModelUrlRef.current); }, []);
+  useEffect(() => () => {
+    runAbortRef.current?.abort();
+    if (localModelUrlRef.current) URL.revokeObjectURL(localModelUrlRef.current);
+    dashboardPreviewUrlsRef.current.forEach(item => URL.revokeObjectURL(item.url));
+    referencePreviewUrlsRef.current.forEach(item => URL.revokeObjectURL(item.url));
+  }, []);
 
-  async function persist(next: ProjectRecord) {
+  function replaceReferencePreviews(assets: ReferenceAsset[]) {
+    referencePreviewUrlsRef.current.forEach(item => URL.revokeObjectURL(item.url));
+    const next = assets.map(asset => ({ id: asset.id, name: asset.name, url: URL.createObjectURL(asset.blob) }));
+    referencePreviewUrlsRef.current = next; setPreviews(next);
+  }
+
+  function removeDashboardImage(index: number) {
+    const removed = dashboardPreviews[index];
+    if (!removed) return;
+    URL.revokeObjectURL(removed.url);
+    const nextPreviews = dashboardPreviews.filter((_, itemIndex) => itemIndex !== index);
+    dashboardPreviewUrlsRef.current = nextPreviews; setDashboardPreviews(nextPreviews);
+    setDashboardImages(current => current.filter((_, itemIndex) => itemIndex !== index));
+  }
+
+  function clearDashboardImages() {
+    dashboardPreviewUrlsRef.current.forEach(item => URL.revokeObjectURL(item.url));
+    dashboardPreviewUrlsRef.current = []; setDashboardPreviews([]); setDashboardImages([]);
+  }
+
+  const activateModelBlob = useCallback((blob?: Blob) => {
+    const previous = localModelUrlRef.current;
+    const next = blob ? URL.createObjectURL(blob) : "";
+    localModelUrlRef.current = next;
+    setLocalModelUrl(next);
+    if (previous) URL.revokeObjectURL(previous);
+  }, []);
+
+  const persist = useCallback(async (next: ProjectRecord) => {
     const saved = { ...next, updatedAt: Date.now() };
+    projectRef.current = saved;
     setProject(saved);
     setProjects(current => [saved, ...current.filter(item => item.id !== saved.id)].sort((a, b) => b.updatedAt - a.updatedAt));
     await saveProject(saved);
     return saved;
-  }
+  }, []);
+
+  const cacheGeneratedModel = useCallback(async (projectId: string, modelUrl: string, modelId?: string) => {
+    try {
+      const response = await fetch(modelUrl);
+      if (!response.ok) throw new Error(`Model download returned ${response.status}`);
+      const blob = await response.blob();
+      const existing = projectRef.current?.id === projectId ? projectRef.current : (await listProjects()).find(item => item.id === projectId);
+      if (!existing) return;
+      const iterations = [...(existing.iterations || [])];
+      if (iterations.length) iterations[iterations.length - 1] = { ...iterations[iterations.length - 1], modelBlob: blob };
+      const updated = { ...existing, modelUrl, modelId: modelId || existing.modelId, modelBlob: blob, modelName: existing.modelName || `${existing.title}.glb`, iterations };
+      await saveProject(updated);
+      setProjects(current => [updated, ...current.filter(item => item.id !== updated.id)].sort((a, b) => b.updatedAt - a.updatedAt));
+      if (projectRef.current?.id === projectId) {
+        projectRef.current = updated; setProject(updated); activateModelBlob(blob);
+      }
+    } catch {
+      setError("The model is available from the service, but could not be cached in this browser.");
+    }
+  }, [activateModelBlob]);
+
+  const appendRunEvent = useCallback(async (projectId: string, label: string, state: ProjectEvent["state"]) => {
+    const current = projectRef.current?.id === projectId ? projectRef.current : (await listProjects()).find(item => item.id === projectId);
+    if (!current) return;
+    const updated = { ...current, events: [...current.events.map(item => item.state === "active" ? { ...item, state: "done" as const } : item), { id: eventId(), label, state, at: Date.now() }], updatedAt: Date.now() };
+    await saveProject(updated);
+    setProjects(items => [updated, ...items.filter(item => item.id !== projectId)].sort((a, b) => b.updatedAt - a.updatedAt));
+    if (projectRef.current?.id === projectId) { projectRef.current = updated; setProject(updated); }
+  }, []);
 
   function createProject() {
     setProjectNameInput(""); setProjectDialog({ mode: "create" }); setError("");
   }
 
   function openProject(item: ProjectRecord) {
+    projectRef.current = item;
+    activateModelBlob(item.modelBlob);
+    replaceReferencePreviews(item.references);
     setProject(item); setScreen("project"); setSidebarCollapsed(item.status === "processing" || item.status === "ready");
     setStage(item.status === "ready" || item.status === "error" ? "studio" : item.status === "processing" ? "processing" : "intake");
-    setError(""); setLastSelection(null); setModelReady(false);
+    setError(""); setLastSelection(item.pendingSelection as SelectionPacket | undefined || null); setModelReady(false);
+    if (item.modelUrl && !item.modelBlob) void cacheGeneratedModel(item.id, item.modelUrl, item.modelId);
   }
 
   function renameProject(item: ProjectRecord) {
@@ -102,7 +154,8 @@ export default function Home() {
         runAbortRef.current?.abort();
         projectRef.current = null;
         setProject(null); setScreen("dashboard"); setStage("intake"); setSidebarCollapsed(false);
-        setLastSelection(null); setModelReady(false); setLocalModelUrl(""); setError("");
+        setLastSelection(null); setModelReady(false); activateModelBlob(); setError("");
+        replaceReferencePreviews([]);
       }
       setDeleteTarget(null);
     } catch (deleteError) {
@@ -117,6 +170,8 @@ export default function Home() {
     if (!title) return;
     if (projectDialog?.mode === "create") {
       const created = await newProject(title);
+      projectRef.current = created; activateModelBlob(); setLastSelection(null);
+      replaceReferencePreviews([]);
       setProjects(current => [created, ...current]); setProject(created); setScreen("project"); setStage("intake"); setSidebarCollapsed(false); setError("");
     } else if (projectDialog?.mode === "rename") {
       if (title !== projectDialog.target.title) await persist({ ...projectDialog.target, title });
@@ -128,26 +183,31 @@ export default function Home() {
     setProject(current => {
       if (!current) return current;
       const updated: ProjectRecord = { ...current, events: [...current.events.map(entry => entry.state === "active" ? { ...entry, state: "done" as const } : entry), { id: eventId(), label, state, at: Date.now() }], updatedAt: Date.now() };
+      projectRef.current = updated;
       setProjects(list => [updated, ...list.filter(entry => entry.id !== updated.id)].sort((a, b) => b.updatedAt - a.updatedAt));
       void saveProject(updated);
       return updated;
     });
   }, []);
 
-  const consumeRunUpdate = useCallback((update: RunUpdate) => {
-    if (update.type === "status") pushEvent(summarizeStatus(update.status), "active");
-    if (update.type === "metric") pushEvent(`Similarity updated${update.similarity == null ? "" : ` · ${Math.round(update.similarity)}%`}`, "done");
+  const consumeRunUpdate = useCallback(async (update: RunUpdate, targetProjectId: string) => {
+    if (update.type === "status") await appendRunEvent(targetProjectId, summarizeStatus(update.status), "active");
+    if (update.type === "metric") await appendRunEvent(targetProjectId, `Similarity updated${update.similarity == null ? "" : ` · ${Math.round(update.similarity)}%`}`, "done");
     if (update.type === "model" && update.modelUrl) {
-      setProject(current => {
-        if (!current) return current;
-        const firstIteration = { label: `Iteration ${(current.iterations?.length || 0) + 1} · ${current.iterations?.length ? "Refined model" : "Base model"}`, modelId: update.modelId || current.modelId, modelUrl: update.modelUrl, createdAt: Date.now() };
-        const updated = { ...current, modelUrl: update.modelUrl, modelId: update.modelId || current.modelId, status: "ready" as const, iterations: [...(current.iterations || []), firstIteration] };
-        setProjects(list => [updated, ...list.filter(entry => entry.id !== updated.id)].sort((a, b) => b.updatedAt - a.updatedAt));
-        void saveProject(updated); return updated;
-      });
-      setStage("studio"); pushEvent("Model updated", "done");
+      const current = projectRef.current?.id === targetProjectId ? projectRef.current : (await listProjects()).find(item => item.id === targetProjectId);
+      if (!current) return;
+      const sameModel = current.modelUrl === update.modelUrl && (!update.modelId || current.modelId === update.modelId);
+      const firstIteration = { label: `Iteration ${(current.iterations?.length || 0) + 1} · ${current.iterations?.length ? "Refined model" : "Base model"}`, modelId: update.modelId || current.modelId, modelUrl: update.modelUrl, createdAt: Date.now() };
+      const updated = { ...current, modelUrl: update.modelUrl, modelId: update.modelId || current.modelId, status: "ready" as const, iterations: sameModel ? current.iterations : [...(current.iterations || []), firstIteration] };
+      await saveProject(updated);
+      setProjects(list => [updated, ...list.filter(entry => entry.id !== updated.id)].sort((a, b) => b.updatedAt - a.updatedAt));
+      if (projectRef.current?.id === targetProjectId) {
+        if (projectRef.current.modelUrl !== update.modelUrl) activateModelBlob();
+        projectRef.current = updated; setProject(updated); setStage("studio");
+      }
+      if (!sameModel) await appendRunEvent(targetProjectId, "Model updated", "done");
     }
-  }, [pushEvent]);
+  }, [appendRunEvent, activateModelBlob]);
 
   const beginReconstruction = useCallback(async (target: ProjectRecord) => {
     if (target.references.length < 2) return;
@@ -161,23 +221,24 @@ export default function Home() {
     const saved = await persist(running);
     try {
       const files = saved.references.map(asset => new File([asset.blob], asset.name, { type: asset.type }));
-      const result = await startReconstruction(saved.id, files, consumeRunUpdate, controller.signal);
-      const latest = projectRef.current?.id === saved.id ? projectRef.current : saved;
-      const ready = { ...latest, runId: result.runId, modelId: result.modelId || latest.modelId, modelUrl: result.modelUrl || latest.modelUrl, status: result.modelUrl ? "ready" as const : "processing" as const };
-      await persist(ready);
-      if (result.modelUrl) { setStage("studio"); pushEvent("Model updated", "done"); }
+      const result = await startReconstruction(saved.id, files, update => consumeRunUpdate(update, saved.id), controller.signal);
+      const latest = projectRef.current?.id === saved.id ? projectRef.current : (await listProjects()).find(item => item.id === saved.id) || saved;
+      const modelUrl = result.modelUrl || latest.modelUrl;
+      const ready = { ...latest, runId: result.runId, modelId: result.modelId || latest.modelId, modelUrl, status: modelUrl ? "ready" as const : "processing" as const };
+      await saveProject(ready);
+      setProjects(current => [ready, ...current.filter(item => item.id !== saved.id)].sort((a, b) => b.updatedAt - a.updatedAt));
+      if (projectRef.current?.id === saved.id) { projectRef.current = ready; setProject(ready); if (modelUrl) setStage("studio"); }
+      if (modelUrl) void cacheGeneratedModel(saved.id, modelUrl, result.modelId || latest.modelId);
     } catch (runError) {
       if (controller.signal.aborted) return;
       const message = runError instanceof Error ? runError.message : "Reconstruction could not start.";
-      setError(message);
-      const latest = projectRef.current?.id === saved.id ? projectRef.current : saved;
+      const latest = projectRef.current?.id === saved.id ? projectRef.current : (await listProjects()).find(item => item.id === saved.id) || saved;
       const failed: ProjectRecord = { ...latest, status: "error", events: [...latest.events.map(item => item.state === "active" ? { ...item, state: "done" as const } : item), { id: eventId(), label: message, state: "error", at: Date.now() }] };
-      projectRef.current = failed; setProject(failed);
+      if (projectRef.current?.id === saved.id) { setError(message); projectRef.current = failed; setProject(failed); setStage("studio"); }
       setProjects(current => current.map(item => item.id === saved.id ? failed : item));
       void saveProject(failed);
-      setStage("studio");
     }
-  }, [consumeRunUpdate, persist, pushEvent]);
+  }, [consumeRunUpdate, persist, cacheGeneratedModel]);
 
   async function addImages(files: FileList | File[]) {
     if (!project || stage !== "intake") return;
@@ -187,27 +248,33 @@ export default function Home() {
       .filter(file => !project.references.some(item => item.name === file.name && item.blob.size === file.size))
       .map(file => ({ id: eventId(), name: file.name, type: file.type, blob: file, addedAt: Date.now() }));
     if (!additions.length) return;
-    const next = await persist({ ...project, references: [...project.references, ...additions], status: "new" });
+    await persist({ ...project, references: [...project.references, ...additions], status: "new" });
+    const nextPreviews = [...previews, ...additions.map(asset => ({ id: asset.id, name: asset.name, url: URL.createObjectURL(asset.blob) }))];
+    referencePreviewUrlsRef.current = nextPreviews; setPreviews(nextPreviews);
     setError("");
   }
 
   function addDashboardImages(files: FileList | File[]) {
-    const accepted = Array.from(files).filter(file => file.type.startsWith("image/"));
+    const accepted = Array.from(files).filter(file => file.type.startsWith("image/") && !dashboardImages.some(item => item.name === file.name && item.size === file.size));
     if (!accepted.length) { setError("Choose image files to continue."); return; }
-    setDashboardImages(current => [...current, ...accepted.filter(file => !current.some(item => item.name === file.name && item.size === file.size))]);
+    setDashboardImages(current => [...current, ...accepted]);
+    const nextPreviews = [...dashboardPreviews, ...accepted.map(file => ({ file, url: URL.createObjectURL(file) }))];
+    dashboardPreviewUrlsRef.current = nextPreviews; setDashboardPreviews(nextPreviews);
     setError("");
   }
 
   async function startDashboardRun() {
     if (dashboardImages.length < 2) { setError("Add at least two views to generate a model."); return; }
-    const now = Date.now();
+    const now = currentTimestamp();
     const title = `Reconstruction · ${new Date(now).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
     const created = await newProject(title);
     const saved = { ...created, references: dashboardImages.map(file => ({ id: eventId(), name: file.name, type: file.type, blob: file, addedAt: now })) };
     await saveProject(saved);
-    setProjects(current => [saved, ...current]); setProject(saved); projectRef.current = saved; setScreen("project"); setStage("processing");
+    activateModelBlob(); setLastSelection(null); projectRef.current = saved;
+    replaceReferencePreviews(saved.references);
+    setProjects(current => [saved, ...current]); setProject(saved); setScreen("project"); setStage("processing");
     void beginReconstruction(saved);
-    setDashboardImages([]); setError("");
+    clearDashboardImages(); setError("");
   }
 
   function onFileInput(event: ChangeEvent<HTMLInputElement>) {
@@ -226,6 +293,10 @@ export default function Home() {
 
   async function removeReference(id: string) {
     if (!project || stage !== "intake") return;
+    const removed = previews.find(item => item.id === id);
+    if (removed) URL.revokeObjectURL(removed.url);
+    const nextPreviews = previews.filter(item => item.id !== id);
+    referencePreviewUrlsRef.current = nextPreviews; setPreviews(nextPreviews);
     await persist({ ...project, references: project.references.filter(asset => asset.id !== id) });
   }
 
@@ -233,15 +304,13 @@ export default function Home() {
     const file = event.target.files?.[0]; event.target.value = "";
     if (!file || !project) return;
     if (!file.name.toLowerCase().endsWith(".glb")) { setError("Choose a binary .glb model."); return; }
-    if (localModelUrlRef.current) URL.revokeObjectURL(localModelUrlRef.current);
-    localModelUrlRef.current = URL.createObjectURL(file);
-    setLocalModelUrl(localModelUrlRef.current);
+    activateModelBlob(file);
     const updated = await persist({ ...project, modelBlob: file, modelName: file.name, status: "ready" });
     setProject(updated); setStage("studio"); setSidebarCollapsed(true); setModelReady(false); setError("");
     pushEvent("Local model loaded", "done");
   }
 
-  const modelUrl = project?.modelUrl || localModelUrl || undefined;
+  const modelUrl = localModelUrl || project?.modelUrl || undefined;
 
   const handleSample = useCallback((sample: HandSample | null) => {
     handSampleRef.current = sample;
@@ -254,8 +323,21 @@ export default function Home() {
 
   const handleSelection = useCallback((selection: SelectionPacket) => {
     setLastSelection(selection);
+    const current = projectRef.current;
+    if (current) void persist({ ...current, pendingSelection: selection });
     pushEvent("Sculpt captured · ready to refine", "done");
-  }, [pushEvent]);
+  }, [persist, pushEvent]);
+
+  const handleModelEdited = useCallback(async (blob: Blob, projectId: string) => {
+    const current = projectRef.current;
+    if (!current || current.id !== projectId) return;
+    const iterations = [...(current.iterations || [])];
+    if (iterations.length) iterations[iterations.length - 1] = { ...iterations[iterations.length - 1], modelBlob: blob };
+    const updated = { ...current, modelBlob: blob, modelName: current.modelName || `${current.title}.glb`, iterations, updatedAt: Date.now() };
+    projectRef.current = updated; setProject(updated);
+    setProjects(list => [updated, ...list.filter(entry => entry.id !== updated.id)].sort((a, b) => b.updatedAt - a.updatedAt));
+    try { await saveProject(updated); } catch { setError("The sculpt is visible, but its local project save failed."); }
+  }, []);
 
   const submitRefinement = useCallback(async () => {
     if (!project || !lastSelection) return;
@@ -266,14 +348,16 @@ export default function Home() {
     setRefining(true); setError(""); pushEvent("Sending sculpt to refinement model", "active");
     try {
       const updated = await refineSelection(project.runId, project.modelId || project.runId, lastSelection);
+      if (updated.modelUrl && updated.modelUrl !== project.modelUrl) activateModelBlob();
       const nextIteration = { label: `Iteration ${(project.iterations?.length || 1) + 1} · AI refinement`, modelId: updated.modelId || project.modelId, modelUrl: updated.modelUrl, createdAt: Date.now(), selection: lastSelection };
-      await persist({ ...project, modelId: updated.modelId || project.modelId, modelUrl: updated.modelUrl, status: "ready", iterations: [...(project.iterations || []), nextIteration] });
+      await persist({ ...project, modelId: updated.modelId || project.modelId, modelUrl: updated.modelUrl, status: "ready", pendingSelection: undefined, iterations: [...(project.iterations || []), nextIteration] });
+      if (updated.modelUrl) void cacheGeneratedModel(project.id, updated.modelUrl, updated.modelId || project.modelId);
       setLastSelection(null); pushEvent("Refinement complete · model updated", "done");
     } catch (refineError) {
       setError(refineError instanceof Error ? refineError.message : "Refinement could not start.");
       pushEvent("Refinement service unavailable", "error");
     } finally { setRefining(false); }
-  }, [project, lastSelection, persist, pushEvent]);
+  }, [project, lastSelection, persist, pushEvent, cacheGeneratedModel, activateModelBlob]);
 
 
   return <main className={`app-shell${sidebarCollapsed && screen === "project" ? " sidebar-collapsed" : ""}`} onDrop={onDrop} onDragOver={event => event.preventDefault()}>
@@ -283,7 +367,7 @@ export default function Home() {
     {deleteTarget && <div className="dialog-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setDeleteTarget(null); }}><section className="project-dialog delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-title" aria-describedby="delete-description"><span className="kicker">DELETE PROJECT</span><h2 id="delete-title">Delete “{deleteTarget.title}”?</h2><p id="delete-description">This removes the project, saved images, and model history from this browser.</p><div className="dialog-actions"><button className="text-button" onClick={() => setDeleteTarget(null)}>Cancel</button><button className="danger-button" onClick={() => void confirmDeleteProject()}>Delete project</button></div></section></div>}
     <aside className="project-sidebar">
       <div className="sidebar-brand"><img src="/assets/refresh-logo.svg" alt=""/><span>Refresh</span></div>
-      <div className="sidebar-section"><span>PROJECTS</span></div>
+      <div className="sidebar-section"><span>PROJECTS</span><button type="button" title="New project" aria-label="Create project" onClick={createProject}>+</button></div>
       <nav className="sidebar-projects" aria-label="Projects">
         {projects.map(item => <div key={item.id} className="sidebar-project-row"><button className={`sidebar-project${project?.id === item.id && screen === "project" ? " active" : ""}`} onClick={() => openProject(item)} title={item.title}>{item.title}</button><button className="sidebar-project-delete" title={`Delete ${item.title}`} aria-label={`Delete ${item.title}`} onClick={() => setDeleteTarget(item)}>×</button></div>)}
         {!projects.length && <span className="sidebar-empty">No projects yet</span>}
@@ -295,7 +379,7 @@ export default function Home() {
       <div className="dashboard-intake">
         <div className="dashboard-capture"><HandCamera enabled captureMode onCapture={file => addDashboardImages([file])} onSample={handleSample}/></div>
         <div className={`dashboard-drop${dashboardPreviews.length ? " has-images" : ""}`} onClick={() => uploadRef.current?.click()} onDragOver={event => event.preventDefault()} onDragEnter={event => event.currentTarget.classList.add("is-dragging")} onDragLeave={event => event.currentTarget.classList.remove("is-dragging")} onDrop={event => { event.preventDefault(); event.stopPropagation(); event.currentTarget.classList.remove("is-dragging"); addDashboardImages(event.dataTransfer.files); }} role="button" tabIndex={0} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") uploadRef.current?.click(); }}>
-          {!dashboardPreviews.length ? <><span className="upload-mark"><svg viewBox="0 0 32 32"><path d="M16 22V8m0 0-5 5m5-5 5 5M7 20v5a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"/></svg></span><b>Drop images here</b><small>or browse files</small></> : <div className="dashboard-image-grid">{dashboardPreviews.map((image, index) => <div key={`${image.file.name}-${index}`} className="dashboard-image"><img src={image.url} alt={image.file.name}/><button onClick={event => { event.stopPropagation(); setDashboardImages(items => items.filter((_, itemIndex) => itemIndex !== index)); }} aria-label={`Remove ${image.file.name}`}>×</button></div>)}<span className="dashboard-add-image">＋ Add images</span></div>}
+          {!dashboardPreviews.length ? <><span className="upload-mark"><svg viewBox="0 0 32 32"><path d="M16 22V8m0 0-5 5m5-5 5 5M7 20v5a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"/></svg></span><b>Drop images here</b><small>or browse files</small></> : <div className="dashboard-image-grid">{dashboardPreviews.map((image, index) => <div key={`${image.file.name}-${index}`} className="dashboard-image"><img src={image.url} alt={image.file.name}/><button onClick={event => { event.stopPropagation(); removeDashboardImage(index); }} aria-label={`Remove ${image.file.name}`}>×</button></div>)}<span className="dashboard-add-image">＋ Add images</span></div>}
         </div>
         <div className="dashboard-intake-footer"><span>{dashboardImages.length} views · camera or upload</span><a href="/pinch-demo">Pigeon hand sculpt demo →</a><button className="primary-button" onClick={() => void startDashboardRun()} disabled={dashboardImages.length < 2}>Generate base model <span>→</span></button></div>
       </div>
@@ -311,14 +395,14 @@ export default function Home() {
         {error && <div className="inline-error">{error}</div>}
       </div> : <div className="studio-layout">
         <div className="studio-main"><div className="studio-title"><div><span className="kicker">{stage === "processing" ? "BASE MODEL" : "MODEL WORKSPACE"}</span><h1>{project?.modelName || (stage === "processing" ? "Generating model" : "3D model")}</h1></div><div className="studio-status">{project?.status === "error" ? "Service unavailable" : stage === "processing" ? "Generating model" : modelReady ? "Sculpting ready" : "Waiting for model"}</div></div>
-          <div className="model-stage"><ModelViewport modelUrl={modelUrl} handSample={handSampleRef} onSelection={handleSelection} onModelReady={setModelReady} autoRotate={false}/>
+          <div className="model-stage"><ModelViewport modelUrl={modelUrl} projectKey={project?.id || "none"} handSample={handSampleRef} onSelection={handleSelection} onModelEdited={handleModelEdited} onModelReady={setModelReady} autoRotate={false}/>
             {!modelUrl && <button className="load-model" onClick={() => modelRef.current?.click()}>Load generated .glb</button>}
             {lastSelection && <div className="selection-chip">Region selected · {lastSelection.faces.length} mesh faces <span>{refining ? "Refining…" : ""}</span></div>}
           </div>
           <div className="model-toolbar"><span>{project?.references.length || 0} captured views</span><span className="tool-divider"/><button onClick={() => modelRef.current?.click()}>Load .glb</button><span className="tool-spacer"/><span>{handSample ? `Hand distance ${Math.round(handSample.distanceMm)} mm` : "Pinch and move to sculpt"}</span></div>
           <div className="iteration-strip">{(project?.iterations?.length ? project.iterations : modelUrl ? [{ label: "Iteration 1 · Base model", modelUrl, createdAt: project?.updatedAt || 0 }] : []).map((item, index) => <span key={`${item.label}-${index}`} className="iteration-item"><i>{index + 1}</i>{item.label}{index < (project?.iterations?.length || 1) - 1 && <b>→</b>}</span>)}</div>
           {error && <div className="inline-error">{error}<button onClick={() => setError("")}>Dismiss</button></div>}
-          {modelReady && stage === "studio" && <HandCamera enabled compact onSample={handleSample}/>}
+          {modelReady && stage === "studio" && <div className="studio-hand-camera"><div className="studio-hand-label"><span>LIVE HAND PREVIEW</span><small>Pinch and move here to sculpt the model above</small></div><HandCamera enabled onSample={handleSample}/></div>}
         </div>
         <aside className="process-panel"><details className="agent-graph"><summary><span className="graph-mark">⌘</span><span><b>Agent team</b><small>Coordinator · model · refinement</small></span><i>⌄</i></summary><div className="graph-nodes"><span>Coordinator</span><div><i/>Reference views <i/>Geometry <i/>Similarity</div><small>Tasks split by the reconstruction service</small></div></details>
           <details className="thinking-trace" open><summary><span className="thinking-icon">✳</span><b>Thinking</b><small>{project?.events?.length || 0} updates</small><i>⌄</i></summary>

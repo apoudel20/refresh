@@ -7,6 +7,18 @@ type Props = { onSample: (sample: HandSample | null) => void; enabled: boolean; 
 const WASM_ROOT = "/mediapipe/wasm";
 const MODEL_PATH = "/assets/hand_landmarker.task";
 
+type FilterState = { raw: number; value: number; derivative: number; time: number };
+function oneEuro(state: FilterState | null, value: number, time: number) {
+  if (!state) return { state: { raw: value, value, derivative: 0, time }, value };
+  const dt = Math.max(1 / 120, Math.min(0.1, (time - state.time) / 1000));
+  const alpha = (cutoff: number) => { const tau = 1 / (2 * Math.PI * cutoff); return 1 / (1 + tau / dt); };
+  const rawDerivative = (value - state.raw) / dt;
+  const derivative = state.derivative + alpha(1.1) * (rawDerivative - state.derivative);
+  const adaptiveCutoff = 1.35 + 0.045 * Math.abs(derivative);
+  const filtered = state.value + alpha(adaptiveCutoff) * (value - state.value);
+  return { state: { raw: value, value: filtered, derivative, time }, value: filtered };
+}
+
 export default function HandCamera({ onSample, enabled, compact = false, captureMode = false, onCapture }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -16,11 +28,16 @@ export default function HandCamera({ onSample, enabled, compact = false, capture
   const sampleRef = useRef<HandSample | null>(null);
   const calibrateWidthRef = useRef<number | null>(null);
   const palmWidthRef = useRef<number | null>(null);
+  const filterRef = useRef<{ x: FilterState | null; y: FilterState | null }>({ x: null, y: null });
+  const distanceFilterRef = useRef<FilterState | null>(null);
+  const pinchRef = useRef(false);
   const lastUIRef = useRef(0);
+  const pointUpdateRef = useRef(0);
   const [status, setStatus] = useState<"off" | "loading" | "ready" | "error">("off");
   const [tracking, setTracking] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [message, setMessage] = useState("");
   const [handFound, setHandFound] = useState(false);
+  const [handPoint, setHandPoint] = useState<{ x: number; y: number } | null>(null);
   const [pinching, setPinching] = useState(false);
   const [distance, setDistance] = useState(500);
   const [calibrated, setCalibrated] = useState(false);
@@ -67,6 +84,8 @@ export default function HandCamera({ onSample, enabled, compact = false, capture
         const hand = result.landmarks?.[0];
         if (!hand || !video.videoWidth) {
           sampleRef.current = null; onSample(null);
+          filterRef.current = { x: null, y: null }; distanceFilterRef.current = null; pinchRef.current = false;
+          setHandPoint(null);
           if (performance.now() - lastUIRef.current > 180) { lastUIRef.current = performance.now(); setHandFound(false); setPinching(false); }
           return;
         }
@@ -74,10 +93,20 @@ export default function HandCamera({ onSample, enabled, compact = false, capture
         const palmWidthPx = Math.hypot((indexMcp.x - pinkyMcp.x) * video.videoWidth, (indexMcp.y - pinkyMcp.y) * video.videoHeight);
         palmWidthRef.current = palmWidthPx;
         const referenceWidth = calibrateWidthRef.current || video.videoWidth * 0.18;
-        const estimatedMm = Math.max(180, Math.min(1300, Math.round(500 * referenceWidth / Math.max(palmWidthPx, 1))));
+        const rawDistance = Math.max(180, Math.min(1300, 500 * referenceWidth / Math.max(palmWidthPx, 1)));
+        const filteredDistance = oneEuro(distanceFilterRef.current, rawDistance, performance.now());
+        distanceFilterRef.current = filteredDistance.state;
+        const estimatedMm = Math.round(filteredDistance.value);
         const pinchDistance = Math.hypot((thumbTip.x - indexTip.x) * video.videoWidth, (thumbTip.y - indexTip.y) * video.videoHeight) / Math.max(video.videoWidth, video.videoHeight);
-        const next = { x: 1 - indexTip.x, y: indexTip.y, pinching: pinchDistance < 0.055, distanceMm: estimatedMm };
+        if (!pinchRef.current && pinchDistance < 0.047) pinchRef.current = true;
+        else if (pinchRef.current && pinchDistance > 0.068) pinchRef.current = false;
+        const targetX = pinchRef.current ? (thumbTip.x + indexTip.x) / 2 : indexTip.x;
+        const filteredX = oneEuro(filterRef.current.x, 1 - targetX, performance.now());
+        const filteredY = oneEuro(filterRef.current.y, pinchRef.current ? (thumbTip.y + indexTip.y) / 2 : indexTip.y, performance.now());
+        filterRef.current = { x: filteredX.state, y: filteredY.state };
+        const next = { x: filteredX.value, y: filteredY.value, pinching: pinchRef.current, distanceMm: estimatedMm };
         sampleRef.current = next; onSample(next);
+        if (performance.now() - pointUpdateRef.current > 28) { pointUpdateRef.current = performance.now(); setHandPoint({ x: next.x, y: next.y }); }
         if (performance.now() - lastUIRef.current > 180) { lastUIRef.current = performance.now(); setHandFound(true); setPinching(next.pinching); setDistance(estimatedMm); }
       };
       loop();
@@ -114,7 +143,10 @@ export default function HandCamera({ onSample, enabled, compact = false, capture
 
   useEffect(() => {
     if (enabled && status === "off") void start();
-    if (!enabled && status !== "off") stop();
+    if (!enabled && status !== "off") {
+      const timer = window.setTimeout(() => stop(), 0);
+      return () => window.clearTimeout(timer);
+    }
   }, [enabled, status]);
 
   function calibrate() {
@@ -138,12 +170,13 @@ export default function HandCamera({ onSample, enabled, compact = false, capture
       {status !== "ready" && <div className="capture-camera-overlay"><b>{status === "loading" ? "Starting camera…" : "Camera permission needed"}</b>{status === "error" && <button className="text-button" onClick={start}>Retry camera</button>}{message && <small>{message}</small>}</div>}
       {status === "ready" && <span className={`camera-live${handFound ? " hand-found" : ""}`}><i />{tracking === "loading" ? "Loading hand tracking…" : tracking === "error" ? "Camera ready · tracking unavailable" : pinching ? "Pinch detected" : handFound ? `Hand tracked · ${distance} mm` : "Hand tracking active · show your hand"}</span>}
       {status === "ready" && tracking === "error" && <button className="capture-tracking-retry" onClick={() => void start()}>Retry hand tracking</button>}
-      {handFound && <span className={`capture-hand-point${pinching ? " pinching" : ""}`} style={{ left: `${sampleRef.current ? sampleRef.current.x * 100 : 50}%`, top: `${sampleRef.current ? sampleRef.current.y * 100 : 50}%` }} />}
+      {handFound && handPoint && <span className={`capture-hand-point${pinching ? " pinching" : ""}`} style={{ left: `${handPoint.x * 100}%`, top: `${handPoint.y * 100}%` }} />}
     </div><div className="capture-camera-controls"><div><b>Capture camera views</b><small>{tracking === "error" ? "Camera capture is available; retry hand tracking above." : tracking === "loading" ? "Hand tracking is starting. Add several angles, then build the base model." : "Add several angles, then build the base model."}</small></div><button className="primary-button" onClick={captureView} disabled={status !== "ready"}>Capture view <span>＋</span></button></div>
   </div>;
 
   return <div className={`hand-panel${compact ? " compact" : ""}`}>
     <div className="hand-video"><video ref={videoRef} playsInline muted className={status === "ready" ? "mirrored visible" : "mirrored"} />
+      {handFound && handPoint && <span className={`hand-cursor-dot${pinching ? " pinching" : ""}`} style={{ left: `${handPoint.x * 100}%`, top: `${handPoint.y * 100}%` }} />}
       {status !== "ready" && <div className="camera-empty"><span>{status === "error" ? "CAMERA ACCESS NEEDED" : "STARTING CAMERA"}</span></div>}
       <div className={`hand-badge ${handFound ? "found" : ""}`}><i />{pinching ? "Pinch active" : handFound ? "Hand detected" : tracking === "loading" ? "Loading hand tracking" : tracking === "error" ? "Tracking unavailable" : status === "ready" ? "Show your hand" : status === "error" ? "Allow camera access" : "Starting camera"}</div>
     </div>

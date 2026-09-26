@@ -1,6 +1,6 @@
 export type ReferenceAsset = { id: string; name: string; type: string; blob: Blob; addedAt: number };
 export type ProjectEvent = { id: string; label: string; state: "done" | "active" | "queued" | "error"; at: number };
-export type ModelIteration = { label: string; modelId?: string; modelUrl?: string; createdAt: number; selection?: unknown };
+export type ModelIteration = { label: string; modelId?: string; modelUrl?: string; modelBlob?: Blob; createdAt: number; selection?: unknown };
 export type ProjectRecord = {
   id: string;
   title: string;
@@ -12,6 +12,7 @@ export type ProjectRecord = {
   modelUrl?: string;
   modelBlob?: Blob;
   modelName?: string;
+  pendingSelection?: unknown;
   iterations?: ModelIteration[];
   status: "new" | "processing" | "ready" | "error";
   events: ProjectEvent[];

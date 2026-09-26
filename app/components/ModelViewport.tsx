@@ -11,23 +11,38 @@ type Props = {
   handSample: MutableRefObject<HandSample | null>;
   onSelection: (selection: SelectionPacket) => void;
   onModelReady: (ready: boolean) => void;
+  onModelEdited?: (blob: Blob, projectKey: string) => void;
+  projectKey?: string;
   autoRotate: boolean;
   demoBird?: boolean;
 };
-type OrbitController = { update: () => void; dispose: () => void; enableDamping: boolean; dampingFactor: number; minDistance: number; maxDistance: number; autoRotate: boolean; autoRotateSpeed: number };
+type OrbitController = { update: () => void; dispose: () => void; enabled: boolean; enableDamping: boolean; dampingFactor: number; minDistance: number; maxDistance: number; minPolarAngle: number; maxPolarAngle: number; autoRotate: boolean; autoRotateSpeed: number; target: THREEType.Vector3 };
+type Grab = {
+  mesh: THREEType.Mesh;
+  anchor: THREEType.Vector3;
+  startWorld: THREEType.Vector3;
+  plane: THREEType.Plane;
+  startHandDistance: number;
+  towardCamera: THREEType.Vector3;
+  radius: number;
+  originals: Map<number, THREEType.Vector3>;
+  weights: Map<number, number>;
+};
 
-export default function ModelViewport({ modelUrl, handSample, onSelection, onModelReady, autoRotate, demoBird = false }: Props) {
+export default function ModelViewport({ modelUrl, handSample, onSelection, onModelReady, onModelEdited, projectKey = "demo", autoRotate }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [error, setError] = useState("");
   const [ready, setReady] = useState(false);
-  const callbacksRef = useRef({ handSample, onModelReady, onSelection });
+  const callbacksRef = useRef({ handSample, onModelReady, onSelection, onModelEdited });
   const controlsRef = useRef<OrbitController | null>(null);
-  callbacksRef.current = { handSample, onModelReady, onSelection };
-  useEffect(() => { if (controlsRef.current) controlsRef.current.autoRotate = autoRotate; }, [autoRotate]);
+  useEffect(() => {
+    callbacksRef.current = { handSample, onModelReady, onSelection, onModelEdited };
+    if (controlsRef.current) controlsRef.current.autoRotate = autoRotate;
+  }, [handSample, onModelReady, onSelection, onModelEdited, autoRotate]);
 
   useEffect(() => {
-    if (!hostRef.current || !canvasRef.current || (!modelUrl && !demoBird)) { setReady(false); callbacksRef.current.onModelReady(false); return; }
+    if (!hostRef.current || !canvasRef.current || !modelUrl) { setReady(false); callbacksRef.current.onModelReady(false); return; }
     let alive = true;
     let frame = 0;
     let renderer: THREEType.WebGLRenderer | null = null;
@@ -36,11 +51,34 @@ export default function ModelViewport({ modelUrl, handSample, onSelection, onMod
     let model: THREEType.Object3D | null = null;
     let line: THREEType.Line | null = null;
     let brush: THREEType.Mesh | null = null;
-    let selectedPoints: THREEType.Vector3[] = [];
+    let grab: Grab | null = null;
+    const selectedPoints: THREEType.Vector3[] = [];
     const selectedFaces: Array<{ meshId: string; faceIndex: number }> = [];
     const editedVertices = new Map<string, { meshName: string; vertices: Map<number, { original: [number, number, number]; position: [number, number, number] }> }>();
     let wasPinching = false;
     let lastSample = 0;
+
+    const finishSelection = async (THREE: typeof import("three")) => {
+      if (model && editedVertices.size) {
+        const points = selectedPoints.map(point => [point.x, point.y, point.z] as [number, number, number]);
+        const screenshot = renderer?.domElement.toDataURL("image/png");
+        const geometryEdits = [...editedVertices.entries()].map(([meshId, edit]) => ({ meshId, meshName: edit.meshName, vertices: [...edit.vertices.entries()].map(([index, vertex]) => ({ index, ...vertex })) }));
+        callbacksRef.current.onSelection({ points, faces: [...selectedFaces], geometryEdits, handDistanceMm: callbacksRef.current.handSample.current?.distanceMm || 500, screenshot });
+        try {
+          const { GLTFExporter } = await import("three/addons/exporters/GLTFExporter.js");
+          const exporter = new GLTFExporter();
+          exporter.parse(model, result => {
+            if (alive && result instanceof ArrayBuffer) callbacksRef.current.onModelEdited?.(new Blob([result], { type: "model/gltf-binary" }), projectKey);
+          }, exportError => { if (alive) setError(exportError.message || "Could not save the sculpted model."); }, { binary: true });
+        } catch (exportError) {
+          if (alive) setError(exportError instanceof Error ? exportError.message : "Could not save the sculpted model.");
+        }
+      }
+      selectedPoints.length = 0; selectedFaces.length = 0; editedVertices.clear(); grab = null;
+      if (line) { line.parent?.remove(line); line.geometry.dispose(); (line.material as THREEType.Material).dispose(); line = null; }
+      if (brush) brush.visible = false;
+      void THREE;
+    };
 
     void (async () => {
       try {
@@ -52,59 +90,54 @@ export default function ModelViewport({ modelUrl, handSample, onSelection, onMod
         scene.background = new THREE.Color("#f4f8fc");
         scene.add(new THREE.HemisphereLight(0xeaf5ff, 0x8192a5, 2.2));
         const key = new THREE.DirectionalLight(0xffffff, 2.1); key.position.set(3, 5, 5); scene.add(key);
-        const camera = new THREE.PerspectiveCamera(35, 1, 0.05, 100);
-        camera.position.set(0, 0.15, 4.7);
+        const camera = new THREE.PerspectiveCamera(38, 1, 0.01, 100);
         renderer = new THREE.WebGLRenderer({ canvas: canvasRef.current, antialias: true, alpha: false, preserveDrawingBuffer: true });
         renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
         renderer.outputColorSpace = THREE.SRGBColorSpace;
         renderer.toneMapping = THREE.ACESFilmicToneMapping;
         renderer.toneMappingExposure = 1.08;
-        controls = new OrbitControls(camera, renderer.domElement);
+        controls = new OrbitControls(camera, renderer.domElement) as OrbitController;
         controlsRef.current = controls;
         controls.enableDamping = true; controls.dampingFactor = 0.08;
-        controls.minDistance = 1.2; controls.maxDistance = 12;
         controls.autoRotate = autoRotate; controls.autoRotateSpeed = 0.7;
         const floor = new THREE.GridHelper(8, 20, 0xc7d8e8, 0xe0e9f1);
-        floor.position.y = -1.15; scene.add(floor);
+        floor.position.y = -1.35; scene.add(floor);
         const raycaster = new THREE.Raycaster();
         const pointer = new THREE.Vector2();
+        const frameModel = (object: THREEType.Object3D) => {
+          object.updateWorldMatrix(true, true);
+          const bounds = new THREE.Box3().setFromObject(object);
+          const center = bounds.getCenter(new THREE.Vector3());
+          object.position.sub(center);
+          const dimensions = bounds.getSize(new THREE.Vector3());
+          const largest = Math.max(dimensions.x, dimensions.y, dimensions.z) || 1;
+          object.scale.multiplyScalar(2.15 / largest);
+          object.updateWorldMatrix(true, true);
+          const sphere = new THREE.Box3().setFromObject(object).getBoundingSphere(new THREE.Sphere());
+          const verticalFov = THREE.MathUtils.degToRad(camera.fov);
+          const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * Math.max(camera.aspect, 0.1));
+          const narrowFov = Math.min(verticalFov, horizontalFov);
+          const distance = sphere.radius / Math.sin(narrowFov / 2) * 1.18;
+          camera.position.set(distance * 0.06, distance * 0.08, distance);
+          camera.near = Math.max(0.01, distance / 100); camera.far = distance * 20;
+          camera.updateProjectionMatrix(); camera.lookAt(0, 0, 0);
+          controls!.target.set(0, 0, 0);
+          controls!.minDistance = sphere.radius * 1.1; controls!.maxDistance = sphere.radius * 9;
+          controls!.minPolarAngle = 0.06; controls!.maxPolarAngle = Math.PI - 0.04;
+          controls!.update();
+        };
         const onLoaded = (object: THREEType.Object3D) => {
           if (!alive) return;
           model = object;
-          if (modelUrl !== "demo:bird") {
-            const box = new THREE.Box3().setFromObject(model);
-            const center = box.getCenter(new THREE.Vector3());
-            model.position.sub(center);
-            const size = box.getSize(new THREE.Vector3());
-            const maxDim = Math.max(size.x, size.y, size.z) || 1;
-            model.scale.setScalar(2.15 / maxDim);
-          }
+          frameModel(model);
           model.traverse(child => { const mesh = child as THREEType.Mesh; if (mesh.isMesh) { mesh.castShadow = true; mesh.receiveShadow = true; } });
           scene.add(model);
-          brush = new THREE.Mesh(new THREE.SphereGeometry(.075, 18, 12), new THREE.MeshBasicMaterial({ color: 0x1674df, transparent: true, opacity: .58, depthTest: false }));
+          brush = new THREE.Mesh(new THREE.SphereGeometry(.065, 18, 12), new THREE.MeshBasicMaterial({ color: 0x1674df, transparent: true, opacity: .62, depthTest: false }));
           brush.renderOrder = 30; brush.visible = false; scene.add(brush);
           setError(""); setReady(true); callbacksRef.current.onModelReady(true);
         };
-        if (demoBird && modelUrl === "demo:bird") {
-          // Local fallback bird for development if the demo GLB path is intentionally omitted.
-          const bird = new THREE.Group();
-          const blue = new THREE.MeshStandardMaterial({ color: 0x4e8fc7, roughness: .76 });
-          const pale = new THREE.MeshStandardMaterial({ color: 0xd6e7f6, roughness: .84 });
-          const orange = new THREE.MeshStandardMaterial({ color: 0xe4a35b, roughness: .74 });
-          const dark = new THREE.MeshStandardMaterial({ color: 0x263c50, roughness: .55 });
-          const bodyGeo = new THREE.SphereGeometry(.77, 48, 32);
-          const body = new THREE.Mesh(bodyGeo, blue); body.name = "bird-body"; body.scale.set(1.12, .72, .58); body.position.set(0, -.05, 0); bird.add(body);
-          const head = new THREE.Mesh(new THREE.SphereGeometry(.42, 32, 24), blue); head.position.set(.72, .48, 0); bird.add(head);
-          const beak = new THREE.Mesh(new THREE.ConeGeometry(.19, .58, 5), orange); beak.rotation.z = -Math.PI / 2; beak.position.set(1.17, .44, 0); bird.add(beak);
-          const wing = new THREE.Mesh(new THREE.SphereGeometry(.47, 20, 12), pale); wing.scale.set(1.18, .38, .12); wing.rotation.z = -.22; wing.position.set(-.08, .1, .48); bird.add(wing);
-          const tail = new THREE.Mesh(new THREE.ConeGeometry(.28, .68, 5), blue); tail.rotation.z = Math.PI / 2; tail.position.set(-.95, .08, 0); bird.add(tail);
-          for (const side of [-1, 1]) { const eye = new THREE.Mesh(new THREE.SphereGeometry(.055, 12, 10), dark); eye.position.set(.83, .57, side * .31); bird.add(eye); }
-          for (const side of [-1, 1]) { const leg = new THREE.Mesh(new THREE.CylinderGeometry(.025, .035, .44, 6), orange); leg.position.set(.02, -.62, side * .2); bird.add(leg); }
-          onLoaded(bird);
-        } else {
-          const loader = new GLTFLoader();
-          loader.load(modelUrl!, gltf => onLoaded(gltf.scene), undefined, loadError => { if (alive) { setError(loadError instanceof Error ? loadError.message : "Could not load the generated model."); setReady(false); callbacksRef.current.onModelReady(false); } });
-        }
+        const loader = new GLTFLoader();
+        loader.load(modelUrl, gltf => onLoaded(gltf.scene), undefined, loadError => { if (alive) { setError(loadError instanceof Error ? loadError.message : "Could not load the generated model."); setReady(false); callbacksRef.current.onModelReady(false); } });
 
         const resize = () => {
           if (!hostRef.current || !renderer) return;
@@ -113,65 +146,68 @@ export default function ModelViewport({ modelUrl, handSample, onSelection, onMod
           camera.aspect = rect.width / Math.max(1, rect.height); camera.updateProjectionMatrix();
         };
         observer = new ResizeObserver(resize); observer.observe(hostRef.current); resize();
-        let moved = false;
-        const finishSelection = () => {
-          if (selectedPoints.length > 2) {
-            const points = selectedPoints.map(point => [point.x, point.y, point.z] as [number, number, number]);
-            const screenshot = renderer?.domElement.toDataURL("image/png");
-            const geometryEdits = [...editedVertices.entries()].map(([meshId, edit]) => ({ meshId, meshName: edit.meshName, vertices: [...edit.vertices.entries()].map(([index, vertex]) => ({ index, ...vertex })) }));
-            callbacksRef.current.onSelection({ points, faces: [...selectedFaces], geometryEdits, handDistanceMm: callbacksRef.current.handSample.current?.distanceMm || 500, screenshot });
+        const beginGrab = (hit: THREEType.Intersection, handDistanceMm: number) => {
+          const mesh = hit.object as THREEType.Mesh;
+          if (!mesh.isMesh || !hit.face) return null;
+          mesh.updateWorldMatrix(true, false);
+          const position = mesh.geometry.getAttribute("position") as THREEType.BufferAttribute;
+          const localAnchor = mesh.worldToLocal(hit.point.clone());
+          const scale = mesh.getWorldScale(new THREE.Vector3());
+          const averageScale = Math.max(.2, (scale.x + scale.y + scale.z) / 3);
+          const radius = .2 / averageScale;
+          const originals = new Map<number, THREEType.Vector3>();
+          const weights = new Map<number, number>();
+          for (let index = 0; index < position.count; index++) {
+            const local = new THREE.Vector3().fromBufferAttribute(position, index);
+            const distance = local.distanceTo(localAnchor);
+            if (distance >= radius) continue;
+            originals.set(index, local);
+            const t = 1 - distance / radius;
+            weights.set(index, t * t * (3 - 2 * t));
           }
-          selectedPoints = []; selectedFaces.length = 0; editedVertices.clear(); moved = false;
-          if (line) { scene.remove(line); line.geometry.dispose(); (line.material as THREEType.Material).dispose(); line = null; }
+          const normal = camera.getWorldDirection(new THREE.Vector3());
+          const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, hit.point);
+          return { mesh, anchor: localAnchor, startWorld: hit.point.clone(), plane, startHandDistance: handDistanceMm, towardCamera: normal.negate(), radius, originals, weights } satisfies Grab;
         };
         const tick = () => {
           frame = requestAnimationFrame(tick);
-          controls?.update();
           const sample = callbacksRef.current.handSample.current;
-          if (model && sample && performance.now() - lastSample > 28) {
+          if (controls) controls.enabled = !sample?.pinching;
+          controls?.update();
+          if (model && sample && performance.now() - lastSample > 16) {
             lastSample = performance.now();
             pointer.set(sample.x * 2 - 1, 1 - sample.y * 2);
             raycaster.setFromCamera(pointer, camera);
-            const hits = raycaster.intersectObject(model, true);
-            let hit: THREEType.Intersection | undefined;
-            if (hits.length) {
-              const handDepthTarget = THREE.MathUtils.clamp(3.2 + (sample.distanceMm - 500) / 420, 1.4, 5.8);
-              hit = hits.reduce((best, current) => Math.abs(current.distance - handDepthTarget) < Math.abs(best.distance - handDepthTarget) ? current : best);
-            }
-            if (sample.pinching && !wasPinching) { selectedPoints = []; selectedFaces.length = 0; moved = true; }
-            if (sample.pinching && hit && moved) {
-              const point = hit.point.clone();
-              if (brush) { brush.position.copy(point); brush.visible = true; }
-              const sculptMesh = hit.object as THREEType.Mesh;
-              const sculptGeometry = sculptMesh.geometry;
-              const position = sculptGeometry.getAttribute("position") as THREEType.BufferAttribute;
-              const localPoint = sculptMesh.worldToLocal(point.clone());
-              const worldScale = sculptMesh.getWorldScale(new THREE.Vector3());
-              const radius = .2 / Math.max(.2, (worldScale.x + worldScale.y + worldScale.z) / 3);
-              let deformed = false;
-              for (let vertex = 0; vertex < position.count; vertex++) {
-                const vertexPoint = new THREE.Vector3().fromBufferAttribute(position, vertex);
-                const distance = vertexPoint.distanceTo(localPoint);
-                if (distance < radius) {
-                  const weight = Math.pow(1 - distance / radius, 2);
-                  const push = .0035 * weight;
-                  const normal = sculptGeometry.getAttribute("normal") as THREEType.BufferAttribute;
-                  const normalVector = new THREE.Vector3().fromBufferAttribute(normal, vertex).normalize();
-                  const nextPosition: [number, number, number] = [vertexPoint.x + normalVector.x * push, vertexPoint.y + normalVector.y * push, vertexPoint.z + normalVector.z * push];
-                  position.setXYZ(vertex, nextPosition[0], nextPosition[1], nextPosition[2]);
-                  let meshEdit = editedVertices.get(sculptMesh.uuid);
-                  if (!meshEdit) { meshEdit = { meshName: sculptMesh.name || "mesh", vertices: new Map() }; editedVertices.set(sculptMesh.uuid, meshEdit); }
-                  const existing = meshEdit.vertices.get(vertex);
-                  meshEdit.vertices.set(vertex, { original: existing?.original || [vertexPoint.x, vertexPoint.y, vertexPoint.z], position: nextPosition });
-                  deformed = true;
-                }
+            if (sample.pinching && !wasPinching) {
+              selectedPoints.length = 0; selectedFaces.length = 0; editedVertices.clear();
+              const hits = raycaster.intersectObject(model, true);
+              if (hits.length) {
+                grab = beginGrab(hits[0], sample.distanceMm);
+                if (grab && hits[0].faceIndex != null) selectedFaces.push({ meshId: grab.mesh.uuid, faceIndex: hits[0].faceIndex });
               }
-              if (deformed) { position.needsUpdate = true; sculptGeometry.computeVertexNormals(); sculptGeometry.computeBoundingSphere(); }
-
-              if (!selectedPoints.length || selectedPoints[selectedPoints.length - 1].distanceToSquared(point) > 0.0015) {
-                selectedPoints.push(point);
-                const mesh = hit.object as THREEType.Mesh;
-                if (hit.faceIndex != null && !selectedFaces.some(face => face.meshId === mesh.uuid && face.faceIndex === hit!.faceIndex)) selectedFaces.push({ meshId: mesh.uuid, faceIndex: hit.faceIndex });
+            }
+            if (sample.pinching && grab) {
+              const currentWorld = raycaster.ray.intersectPlane(grab.plane, new THREE.Vector3());
+              if (currentWorld) {
+                const depthOffset = (grab.startHandDistance - sample.distanceMm) * 0.002;
+                const deltaWorld = currentWorld.clone().sub(grab.startWorld).addScaledVector(grab.towardCamera, depthOffset).clampLength(0, grab.radius * 2.5);
+                const localCurrent = grab.mesh.worldToLocal(grab.startWorld.clone().add(deltaWorld));
+                const localDelta = localCurrent.sub(grab.anchor);
+                const geometry = grab.mesh.geometry;
+                const position = geometry.getAttribute("position") as THREEType.BufferAttribute;
+                const changes = new Map<number, { original: [number, number, number]; position: [number, number, number] }>();
+                for (const [index, original] of grab.originals) {
+                  const weight = grab.weights.get(index) || 0;
+                  const next = original.clone().addScaledVector(localDelta, weight);
+                  position.setXYZ(index, next.x, next.y, next.z);
+                  changes.set(index, { original: [original.x, original.y, original.z], position: [next.x, next.y, next.z] });
+                }
+                position.needsUpdate = true; geometry.computeVertexNormals(); geometry.computeBoundingSphere();
+                const meshEdit = { meshName: grab.mesh.name || "mesh", vertices: changes };
+                editedVertices.set(grab.mesh.uuid, meshEdit);
+                const worldCursor = grab.startWorld.clone().add(deltaWorld);
+                if (brush) { brush.position.copy(worldCursor); brush.visible = true; }
+                if (!selectedPoints.length || selectedPoints[selectedPoints.length - 1].distanceToSquared(worldCursor) > 0.0008) selectedPoints.push(worldCursor);
                 if (line) { scene.remove(line); line.geometry.dispose(); (line.material as THREEType.Material).dispose(); }
                 const path = [...selectedPoints];
                 if (path.length > 2) path.push(path[0]);
@@ -179,10 +215,10 @@ export default function ModelViewport({ modelUrl, handSample, onSelection, onMod
                 line.renderOrder = 20; scene.add(line);
               }
             }
-            if ((!sample.pinching || !hit) && brush) brush.visible = false;
-            if (!sample.pinching && wasPinching) finishSelection();
+            if ((!sample.pinching || !grab) && brush) brush.visible = false;
+            if (!sample.pinching && wasPinching) void finishSelection(THREE);
             wasPinching = sample.pinching;
-          } else if (!sample && wasPinching) { finishSelection(); wasPinching = false; if (brush) brush.visible = false; }
+          } else if (!sample && wasPinching) { void finishSelection(THREE); wasPinching = false; if (brush) brush.visible = false; }
           renderer!.render(scene, camera);
         };
         tick();
@@ -192,7 +228,7 @@ export default function ModelViewport({ modelUrl, handSample, onSelection, onMod
     })();
 
     return () => { alive = false; observer?.disconnect(); cancelAnimationFrame(frame); controls?.dispose(); controlsRef.current = null; renderer?.dispose(); };
-  }, [modelUrl, demoBird]);
+  }, [modelUrl, autoRotate, projectKey]);
 
   return <div className="model-viewport" ref={hostRef}>
     <canvas ref={canvasRef} aria-label="Generated 3D model viewport" />
