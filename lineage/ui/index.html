@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lineage</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600&display=swap">
+<style>
+:root{--bg:#0d1412;--panel:#131c19;--line:#25332d;--ink:#e2eae5;--mute:#8fa39a;--acc:#5ccfa8;--warn:#e7b85c;--bad:#e8776b;--cache:#8fb4ff;
+--sans:"IBM Plex Sans",system-ui,sans-serif;--mono:"IBM Plex Mono",ui-monospace,monospace;--cond:"IBM Plex Sans Condensed",sans-serif}
+*{box-sizing:border-box}html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 var(--sans)}
+header{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line)}
+h1{font:600 20px var(--cond);margin:0;letter-spacing:.02em}h1 span{color:var(--acc)}
+.ctl{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+input,select,button{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:5px 8px;font:13px var(--sans)}
+input{width:110px}input.n{width:52px}button{cursor:pointer;border-color:var(--acc);color:var(--acc)}button:hover,button:focus-visible{background:#17362c;outline:none}
+.counters{display:flex;gap:16px;margin-left:auto;flex-wrap:wrap}
+.c{display:flex;flex-direction:column}.c b{font:500 18px var(--mono);font-variant-numeric:tabular-nums}.c small{color:var(--mute);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+.mem{font:600 11px var(--mono);padding:3px 7px;border-radius:3px;border:1px solid}
+main{display:grid;grid-template-columns:300px 1fr 340px;gap:0;height:calc(100% - 64px)}
+section{border-right:1px solid var(--line);overflow:auto;padding:12px 14px}section:last-child{border-right:0}
+h2{font:600 12px var(--cond);text-transform:uppercase;letter-spacing:.08em;color:var(--mute);margin:0 0 8px}
+.gen{margin-bottom:10px}.gen>div:first-child{font:500 12px var(--mono);color:var(--mute);margin-bottom:4px}
+.row{display:grid;grid-template-columns:1fr 46px;gap:6px;align-items:center;padding:4px 6px;border-radius:4px;cursor:pointer;font:12px var(--mono)}
+.row:hover,.row.sel{background:var(--panel)}.row .bar{height:4px;background:var(--line);border-radius:2px;margin-top:3px}.row .bar i{display:block;height:100%;background:var(--acc);border-radius:2px}
+.row.blocked,.row.repeat{cursor:default;color:var(--mute)}.row.blocked .lbl{text-decoration:line-through}.tag{font-size:10px;color:var(--warn)}
+.fit{text-align:right;font-variant-numeric:tabular-nums}
+#graph{width:100%;height:360px}#meta{font:12px var(--mono);color:var(--mute);margin-bottom:6px;overflow-wrap:anywhere}
+#chart{width:100%;height:150px;margin-top:10px}
+.node rect{fill:var(--panel);stroke:var(--line);stroke-width:1.2}.node text{fill:var(--ink);font:12px var(--sans)}.node .sub{fill:var(--mute);font:11px var(--mono)}
+.node.running rect{stroke:var(--acc);stroke-width:2}.node.done rect{stroke:var(--acc)}.node.cached rect{stroke:var(--cache);stroke-dasharray:4 3}
+.node{cursor:pointer}.edge{stroke:#4a5d55;stroke-width:1.4;fill:none}
+@media (prefers-reduced-motion:no-preference){.node.running rect{animation:p 1s ease-in-out infinite alternate}@keyframes p{to{stroke-opacity:.35}}}
+#mod pre{white-space:pre-wrap;font:12px var(--mono);background:var(--panel);padding:8px;border-radius:4px;border:1px solid var(--line)}
+.call{border-left:2px solid var(--acc);padding:2px 0 2px 8px;margin:6px 0;font:12px var(--mono)}.call.err{border-color:var(--bad)}
+.empty{color:var(--mute);font-size:13px}
+#gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.card{display:flex;flex-direction:column;gap:4px;text-align:left;border:1px solid var(--line);border-radius:6px;padding:6px;background:var(--panel);color:var(--ink);transition:transform .2s,border-color .2s}
+.card:hover{transform:translateY(-2px);border-color:var(--acc)}.card.sel{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
+.card.live{border-color:var(--acc)}.card.ghost{opacity:.38;cursor:default;border-style:dashed}.card.ghost:hover{transform:none;border-color:var(--line)}
+.card .cap{display:flex;justify-content:space-between;gap:4px;font:11px var(--mono);color:var(--mute)}.card .cap b{font-weight:500}
+.fbar{height:3px;background:var(--line);border-radius:2px}.fbar i{display:block;height:100%;border-radius:2px;transition:width .6s}
+@media (prefers-reduced-motion:no-preference){.pulse{animation:p .8s ease-in-out infinite alternate}.card{animation:in .35s ease-out}@keyframes in{from{opacity:0;transform:translateY(6px)}}}
+@media (max-width:900px){main{grid-template-columns:1fr;height:auto}section{border-right:0;border-bottom:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Lineage<span>.</span></h1>
+  <div class="ctl">
+    <input id="scope" value="demo-on" aria-label="Scope">
+    <select id="memory" aria-label="Memory"><option value="on">memory on</option><option value="off">memory off</option></select>
+    <input id="gens" class="n" type="number" value="4" min="1" aria-label="Generations" title="generations">
+    <input id="k" class="n" type="number" value="4" min="1" aria-label="Structures per generation" title="structures per generation">
+    <input id="wb" value="mock" aria-label="Workbench" title="tools: mock or workbench URL"><input id="ev" placeholder="eval URL (optional)" aria-label="Eval engine URL" title="eval engine URL; blank = workbench/mock">
+    <button id="start">Start search</button><button id="load">Watch scope</button>
+  </div>
+  <div class="counters">
+    <span class="mem" id="memBadge">—</span>
+    <div class="c"><b id="cBest">–</b><small>best fitness</small></div>
+    <div class="c"><b id="cEval">0</b><small>evaluated</small></div>
+    <div class="c"><b id="cBlock">0</b><small>blocked repeats</small></div>
+    <div class="c"><b id="cCache">0</b><small>cache hits</small></div>
+    <div class="c"><b id="cCalls">0</b><small>tool calls</small></div>
+  </div>
+</header>
+<main>
+  <section><h2>Generations</h2><div id="gensList" class="empty">Start a search or watch a scope.</div></section>
+  <section>
+    <h2>Structures in <span id="galGen"></span></h2><div id="gallery"></div>
+    <h2 style="margin-top:14px">Orchestration</h2><div id="meta"></div>
+    <svg id="graph" role="img" aria-label="Current agent structure"></svg>
+    <h2>Best fitness by evaluation</h2><svg id="chart" role="img" aria-label="Best fitness so far"></svg>
+  </section>
+  <section id="mod"><h2>Context module</h2><div class="empty">Click a finished node to see its tool-call trace.</div></section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+let S, es;
+function reset(scope){S={scope,structs:{},order:[],cur:null,sel:null,nodes:{},best:0,evals:0,blocked:0,cache:0,calls:0,curve:[],memory:null};
+  $('gensList').innerHTML='';$('graph').innerHTML='';$('chart').innerHTML='';$('meta').textContent='';}
+function apply(e){
+  const s=e.structure_hash;
+  switch(e.kind){
+    case 'search_started':case 'resume':S.memory=e.memory;break;
+    case 'structure_started':S.structs[s]={...(S.structs[s]||{}),gen:e.gen,origin:e.origin,nodes:e.nodes,edges:e.edges,status:'running'};
+      if(!S.order.includes(s))S.order.push(s);S.cur=s;S.nodes[s]={};e.nodes.forEach(n=>S.nodes[s][n.node_id]={state:'queued'});break;
+    case 'node_started':(S.nodes[s]||={})[e.node_id]={state:'running'};break;
+    case 'tool_called':S.calls++;if(S.nodes[s])S.nodes[s][e.node_id]={state:'running',tool:e.tool_id};break;
+    case 'cache_hit':S.cache++;if(S.nodes[s])S.nodes[s][e.node_id]={state:'cached',trace_key:e.trace_key};break;
+    case 'node_done':if(S.nodes[s])S.nodes[s][e.node_id]={state:'done',trace_key:e.trace_key,calls:e.calls};break;
+    case 'eval':S.evals++;S.structs[s].status='done';S.structs[s].fitness=e.fitness;S.best=Math.max(S.best,e.fitness);S.curve.push(S.best);break;
+    case 'blocked':S.blocked++;S.order.push('b'+S.order.length);S.structs['b'+(S.order.length-1)]={gen:e.gen,status:'blocked',reason:e.reason,origin:e.origin,hash:s,nodes:e.nodes,edges:e.edges};break;
+    case 'repeat':if(S.structs[s])S.structs[s].repeat=`repeat of gen ${e.first_gen}`;break;
+  }
+}
+function render(){
+  $('cBest').textContent=S.evals?S.best.toFixed(2):'–';$('cEval').textContent=S.evals;$('cBlock').textContent=S.blocked;$('cCache').textContent=S.cache;$('cCalls').textContent=S.calls;
+  const mb=$('memBadge');mb.textContent=S.memory==null?'—':(S.memory?'MEMORY ON':'MEMORY OFF');mb.style.color=mb.style.borderColor=S.memory?'var(--acc)':'var(--warn)';
+  const byGen={};S.order.forEach(k=>{const x=S.structs[k];(byGen[x.gen]||=[]).push([k,x]);});
+  $('gensList').classList.toggle('empty',!S.order.length);
+  $('gensList').innerHTML=Object.keys(byGen).sort((a,b)=>b-a).map(g=>`<div class="gen"><div data-g="${g}" style="cursor:pointer">generation ${g} ↗</div>${byGen[g].map(([k,x])=>{
+    if(x.status==='blocked')return `<div class="row blocked"><div><span class="lbl">${(x.hash||'').slice(0,10)} · ${x.origin}</span><div class="tag">${x.reason}</div></div><div class="fit">—</div></div>`;
+    const f=x.fitness??null;return `<div class="row ${k===S.sel?'sel':''}" data-k="${k}"><div>${k.slice(0,10)} · ${x.origin}${x.repeat?`<div class="tag">${x.repeat}</div>`:''}<div class="bar"><i style="width:${(f??0)*100}%"></i></div></div><div class="fit">${f==null?'…':f.toFixed(2)}</div></div>`;}).join('')}</div>`).join('');
+  $('gensList').querySelectorAll('.row[data-k]').forEach(r=>r.onclick=()=>{S.sel=r.dataset.k;render();});
+  $('gensList').querySelectorAll('.gen>div:first-child').forEach(h=>h.onclick=()=>{S.selGen=+h.dataset.g;render();});
+  drawGallery();drawGraph(S.sel||S.cur);drawChart();
+}
+function layout(x,W,H,bw,bh){
+  const preds={};x.nodes.forEach(n=>preds[n.node_id]=[]);x.edges.forEach(e=>preds[e.to]&&preds[e.to].push(e.from));
+  const depth={};const d=n=>depth[n]??=(1+Math.max(0,...preds[n].map(d)));x.nodes.forEach(n=>d(n.node_id));
+  const layers={};x.nodes.forEach(n=>(layers[depth[n.node_id]]||=[]).push(n));
+  const pos={},L=Math.max(...Object.keys(layers).map(Number));
+  Object.entries(layers).forEach(([l,ns])=>ns.forEach((n,i)=>pos[n.node_id]={x:(i+1)*W/(ns.length+1)-bw/2,y:(l-0.5)*H/L-bh/2}));
+  return pos;
+}
+const COLORS={planner:'#b59cff',preprocessor:'#8fb4ff',geometry:'#5ccfa8',refiner:'#e7b85c',texturer:'#f08fb8',verifier:'#e8776b'};
+function drawGallery(){
+  const gens=[...new Set(S.order.map(k=>S.structs[k].gen))];if(!gens.length){$('gallery').innerHTML='';$('galGen').textContent='';return;}
+  const g=S.selGen??Math.max(...gens);$('galGen').textContent=`generation ${g}`;
+  $('gallery').innerHTML=S.order.filter(k=>S.structs[k].gen===g).map(k=>{
+    const x=S.structs[k],W=150,H=96,bw=16,bh=16;if(!x.nodes)return'';const pos=layout(x,W,H-18,bw,bh),st=S.nodes[k]||{};
+    const f=x.fitness,cls=x.status==='blocked'?'ghost':x.status==='running'?'live':'';
+    const edges=x.edges.map(e=>{const a=pos[e.from],b=pos[e.to];return a&&b?`<line x1="${a.x+8}" y1="${a.y+8}" x2="${b.x+8}" y2="${b.y+8}" stroke="#4a5d55" stroke-width="1.2"/>`:'';}).join('');
+    const nodes=x.nodes.map(n=>{const p=pos[n.node_id],s=(st[n.node_id]||{}).state;
+      return `<rect x="${p.x}" y="${p.y}" width="${bw}" height="${bh}" rx="4" fill="${COLORS[n.role]||'#8fa39a'}" fill-opacity="${s==='queued'&&x.status==='running'?0.25:0.9}" ${s==='cached'?'stroke="#8fb4ff" stroke-width="2" stroke-dasharray="3 2"':''}${s==='running'?' class="pulse"':''}/>`;}).join('');
+    const label=x.status==='blocked'?`blocked · ${x.reason}`:f!=null?`fitness ${f.toFixed(2)}`:'running…';
+    return `<button class="card ${cls} ${k===S.sel?'sel':''}" data-k="${k}" title="${x.origin}"><svg viewBox="0 0 ${W} ${H-18}" width="100%" height="${H-18}">${edges}${nodes}</svg>
+      <div class="cap"><span>${x.origin.replace('mutation:','mut:')}</span><b style="color:${f!=null?`hsl(${150*f},55%,62%)`:'var(--mute)'}">${label}</b></div>
+      <div class="fbar"><i style="width:${(f??0)*100}%;background:hsl(${150*(f??0)},55%,52%)"></i></div></button>`;}).join('');
+  $('gallery').querySelectorAll('.card:not(.ghost)').forEach(c=>c.onclick=()=>{S.sel=c.dataset.k;render();});
+}
+function drawGraph(s){
+  const svg=$('graph'),x=S.structs[s];if(!x||!x.nodes){svg.innerHTML='';return;}
+  $('meta').textContent=`${s.slice(0,16)} · gen ${x.gen} · ${x.origin}${x.fitness!=null?' · fitness '+x.fitness.toFixed(2):' · running'}`;
+  const W=svg.clientWidth||600,H=300,bw=170,bh=54,pos=layout(x,W,H,bw,bh);
+  const st=S.nodes[s]||{};
+  svg.setAttribute('viewBox',`0 0 ${W} ${H}`);svg.style.height=H+'px';
+  svg.innerHTML=x.edges.map(e=>{const a=pos[e.from],b=pos[e.to];if(!a||!b)return'';return `<path class="edge" d="M${a.x+bw/2} ${a.y+bh} C${a.x+bw/2} ${a.y+bh+30} ${b.x+bw/2} ${b.y-30} ${b.x+bw/2} ${b.y}"/>`;}).join('')+
+    x.nodes.map(n=>{const p=pos[n.node_id],ns=st[n.node_id]||{state:'queued'};const sub=ns.state==='running'?(ns.tool?'▶ '+ns.tool:'thinking…'):ns.state==='cached'?'reused from memory':ns.state==='done'?`${ns.calls} tool calls`:(n.tools||[]).join(', ');
+      return `<g class="node ${ns.state}" data-n="${n.node_id}" tabindex="0"><rect x="${p.x}" y="${p.y}" width="${bw}" height="${bh}" rx="5"/><rect x="${p.x}" y="${p.y}" width="5" height="${bh}" rx="2" fill="${COLORS[n.role]||'#8fa39a'}" stroke="none"/><text x="${p.x+12}" y="${p.y+21}">${n.role}</text><text class="sub" x="${p.x+10}" y="${p.y+40}">${sub.slice(0,26)}</text></g>`;}).join('');
+  svg.querySelectorAll('.node').forEach(g=>g.onclick=()=>showModule(st[g.dataset.n]));
+}
+function drawChart(){
+  const svg=$('chart'),c=S.curve;if(c.length<2){svg.innerHTML='';return;}
+  const W=svg.clientWidth||600,H=150,p=24;svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
+  const X=i=>p+i*(W-2*p)/(c.length-1),Y=v=>H-p-v*(H-2*p);
+  svg.innerHTML=`<line x1="${p}" y1="${Y(0)}" x2="${W-p}" y2="${Y(0)}" stroke="#25332d"/><line x1="${p}" y1="${Y(1)}" x2="${W-p}" y2="${Y(1)}" stroke="#25332d" stroke-dasharray="3 3"/>
+  <text x="2" y="${Y(1)+4}" fill="#8fa39a" font-size="10">1.0</text><text x="2" y="${Y(0)+4}" fill="#8fa39a" font-size="10">0</text>
+  <polyline fill="none" stroke="#5ccfa8" stroke-width="2" points="${c.map((v,i)=>X(i)+','+Y(v)).join(' ')}"/><circle cx="${X(c.length-1)}" cy="${Y(c[c.length-1])}" r="4" fill="#5ccfa8"/>`;
+}
+async function showModule(ns){
+  const m=$('mod');if(!ns||!ns.trace_key){m.innerHTML='<h2>Context module</h2><div class="empty">This node has not finished yet.</div>';return;}
+  const r=await fetch(`/api/module?scope=${encodeURIComponent(S.scope)}&trace_key=${ns.trace_key}`).then(r=>r.json());
+  m.innerHTML=`<h2>Context module</h2><div id="meta">${r.role} · ${ns.state==='cached'?'reused from memory':'ran'} · trace ${ns.trace_key.slice(0,12)}</div>${r.note?`<pre>${r.note}</pre>`:''}`+
+    (r.calls||[]).map((c,i)=>`<div class="call ${c.error?'err':''}">${i+1}. ${c.tool_id} ${Object.keys(c.args||{}).length?JSON.stringify(c.args):''}<br><span style="color:var(--mute)">${c.summary}</span></div>`).join('')+
+    `<h2 style="margin-top:12px">Output</h2><pre>${r.output?.summary||''}</pre>`;
+}
+async function watch(scope){
+  reset(scope);if(es)es.close();
+  const st=await fetch(`/api/state?scope=${encodeURIComponent(scope)}`).then(r=>r.json());st.events.forEach(apply);render();
+  const since=st.events.length?st.events[st.events.length-1].t:0;
+  es=new EventSource(`/api/stream?scope=${encodeURIComponent(scope)}&since=${since}`);let pend=false;
+  es.onmessage=m=>{apply(JSON.parse(m.data));if(!pend){pend=true;setTimeout(()=>{pend=false;render();},120);}};
+}
+$('load').onclick=()=>watch($('scope').value);
+$('start').onclick=async()=>{const q=new URLSearchParams({scope:$('scope').value,memory:$('memory').value,generations:$('gens').value,k:$('k').value,workbench:$('wb').value,eval_url:$('ev').value});
+  await watch($('scope').value);await fetch('/api/run?'+q,{method:'POST'});};
+window.onresize=()=>S&&render();
+</script>
+</body>
+</html>
