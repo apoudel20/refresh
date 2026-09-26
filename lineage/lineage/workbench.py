@@ -63,9 +63,23 @@ class HttpEval:
         self.eval_version = "http"
 
     def evaluate(self, task_id, structure_hash, artifacts):
-        r = requests.post(f"{self.base}/eval", json={"task_id": task_id, "structure_hash": structure_hash,
-                                                      "artifacts": artifacts}, timeout=600)
+        renders = [a["ref"] for a in artifacts if str(a.get("ref", "")).lower().endswith((".png", ".jpg", ".jpeg"))
+                   and os.path.isfile(a["ref"])]
+        if renders:  # the render evaluator (eval_api.py): multipart images in, overall_score out
+            ref = os.getenv("EVAL_REFERENCE_IMAGE")
+            files = [("renders", (os.path.basename(p), open(p, "rb"), "image/png")) for p in renders]
+            if ref and os.path.isfile(ref):
+                files.append(("reference_image", (os.path.basename(ref), open(ref, "rb"), "image/png")))
+            r = requests.post(f"{self.base}/eval", files=files, timeout=600,
+                              data={"backend": os.getenv("EVAL_BACKEND", "openrouter")})
+        else:
+            r = requests.post(f"{self.base}/eval", json={"task_id": task_id, "structure_hash": structure_hash,
+                                                          "artifacts": artifacts}, timeout=600)
+        r.raise_for_status()
         out = r.json()
+        if "fitness" not in out and "overall_score" in out:
+            out = {"fitness": float(out["overall_score"]), "metrics": {k: v for k, v in out.items() if k != "feedback"},
+                   "per_node": {}, "feedback": out.get("feedback", [])}
         self.eval_version = out.get("eval_version", self.eval_version)
         return out
 

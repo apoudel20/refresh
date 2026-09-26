@@ -53,10 +53,12 @@ python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
 - It needs `fitness` in [0, 1]. Your `eval_api.py` already returns `overall_score` in [0, 1], which is exactly what we need.
 
 ## What's between us and the real product (the hops)
-1. **Eval adapter (small, Lineage side).** Send the sink outputs' render PNGs, plus the reference image, as multipart to your `POST /eval`, and map `overall_score` to `fitness`. Keep the sub-scores and feedback as metrics.
+1. ✅ **Eval adapter: done and tested.** When the final outputs are PNG paths, `HttpEval` sends them as multipart to your `POST /eval`, adding `EVAL_REFERENCE_IMAGE` if set, with `backend=openrouter` unless `EVAL_BACKEND` says otherwise. It maps `overall_score` to `fitness` and keeps the sub-scores as metrics.
+   Tested against your `eval_api.py` (run with `PYTHONPATH=blender_agent/imagegen-skill;blender_agent/render-eval-skill`) on `plateou-example/cmp1.png`: fitness 0.70.
+   To use it: `--eval-url http://<host>:8140`, or the eval-URL field in the UI.
 2. **Workbench over HTTP (your side, needs Blender).** Wrap `TOOL_DEFINITIONS` and `BlenderAgent._call_tool` (the MCP connector) in a tiny FastAPI with the `/tools` and `/call` above. It must run on a machine with Blender and the MCP add-on.
 3. **Agent = your `BlenderAgent`.** Blender tools need real arguments (paths, object names, code), which your agent loop already produces. The cleanest mapping is: one Lineage node = one `BlenderAgent` run with `AgentTraits` restricted to that node's role and tools. `AgentTraits` is already the "genome" Lineage hashes.
 4. **Artifacts through a shared workspace.** Each node's output (PLY, blend or renders) is a path plus its content hash, and it becomes the input to the next node.
 5. **Budget.** A real structure takes minutes and costs real money, so run small generations (k = 3–4) and lean on the cache.
 
-Hops 1, 4 and 5 are Lineage work. Hops 2 and 3 need someone with Blender running.
+Hop 1 is done. Hops 2 and 3 need someone with Blender running. Once they exist, hops 4 and 5 are small Lineage changes.
