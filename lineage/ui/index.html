@@ -54,7 +54,7 @@ h2{font:600 12px var(--cond);text-transform:uppercase;letter-spacing:.08em;color
     <input id="gens" class="n" type="number" value="4" min="1" aria-label="Generations" title="generations">
     <input id="k" class="n" type="number" value="4" min="1" aria-label="Structures per generation" title="structures per generation">
     <input id="wb" value="mock" aria-label="Workbench" title="tools: mock or workbench URL"><input id="ev" placeholder="eval URL (optional)" aria-label="Eval engine URL" title="eval engine URL; blank = workbench/mock">
-    <button id="start">Start search</button><button id="load">Watch scope</button>
+    <button id="start">Start / resume</button><button id="stop">Stop</button><button id="load">Watch scope</button><a href="/how" target="_blank" style="color:var(--acc);font-size:13px;margin-left:6px">How it works ↗</a>
   </div>
   <div class="counters">
     <span class="mem" id="memBadge">—</span>
@@ -84,7 +84,8 @@ function reset(scope){S={scope,structs:{},order:[],cur:null,sel:null,nodes:{},be
 function apply(e){
   const s=e.structure_hash;
   switch(e.kind){
-    case 'search_started':case 'resume':S.memory=e.memory;break;
+    case 'search_started':case 'resume':S.memory=e.memory;S.status=e.kind==='resume'?`resumed from Atlas at generation ${e.gen}`:'running';break;
+    case 'stopped':S.status=`stopped in generation ${e.gen}: press Start / resume to continue from Atlas`;break;
     case 'structure_started':S.structs[s]={...(S.structs[s]||{}),gen:e.gen,origin:e.origin,nodes:e.nodes,edges:e.edges,status:'running'};
       if(!S.order.includes(s))S.order.push(s);S.cur=s;S.nodes[s]={};e.nodes.forEach(n=>S.nodes[s][n.node_id]={state:'queued'});break;
     case 'node_started':(S.nodes[s]||={})[e.node_id]={state:'running'};break;
@@ -135,7 +136,7 @@ function drawGallery(){
 }
 function drawGraph(s){
   const svg=$('graph'),x=S.structs[s];if(!x||!x.nodes){svg.innerHTML='';return;}
-  $('meta').textContent=`${s.slice(0,16)} · gen ${x.gen} · ${x.origin}${x.fitness!=null?' · fitness '+x.fitness.toFixed(2):' · running'}`;
+  $('meta').textContent=`${S.status?S.status.toUpperCase()+' — ':''}${s.slice(0,16)} · gen ${x.gen} · ${x.origin}${x.fitness!=null?' · fitness '+x.fitness.toFixed(2):' · running'}`;
   const W=svg.clientWidth||600,H=300,bw=170,bh=54,pos=layout(x,W,H,bw,bh);
   const st=S.nodes[s]||{};
   svg.setAttribute('viewBox',`0 0 ${W} ${H}`);svg.style.height=H+'px';
@@ -167,6 +168,7 @@ async function watch(scope){
   es.onmessage=m=>{apply(JSON.parse(m.data));if(!pend){pend=true;setTimeout(()=>{pend=false;render();},120);}};
 }
 $('load').onclick=()=>watch($('scope').value);
+$('stop').onclick=()=>fetch('/api/stop?scope='+encodeURIComponent($('scope').value),{method:'POST'});
 $('start').onclick=async()=>{const q=new URLSearchParams({scope:$('scope').value,memory:$('memory').value,generations:$('gens').value,k:$('k').value,workbench:$('wb').value,eval_url:$('ev').value});
   await watch($('scope').value);await fetch('/api/run?'+q,{method:'POST'});};
 window.onresize=()=>S&&render();

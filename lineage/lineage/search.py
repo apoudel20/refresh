@@ -40,7 +40,7 @@ def near_dup(db, scope, s_hash, vec):
     return None
 
 
-def search(scope, memory, generations, k, workbench, task_id, task_input, seed=0, model=None, db=None):
+def search(scope, memory, generations, k, workbench, task_id, task_input, seed=0, model=None, db=None, stop=None):
     db = db if db is not None else get_db()
     ensure_indexes(db)
     vec_gate = memory and ensure_vector_indexes(db)
@@ -56,6 +56,9 @@ def search(scope, memory, generations, k, workbench, task_id, task_input, seed=0
         elite_hashes = {e["structure_hash"] for e in gen_.elites()} if memory else set()
         this_gen = []
         for cand in gen_.propose(k):
+            if stop is not None and stop.is_set():  # stopped from the UI; rerun the same scope to resume
+                log(db, scope, "stopped", gen=gen)
+                return db
             nodes = cand["nodes"]
             try:
                 s_hash = structure_hash(ns, {n: g["agent_hash"] for n, g in nodes.items()}, cand["edges"])

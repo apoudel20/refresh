@@ -15,6 +15,7 @@ app = FastAPI()
 db = get_db()
 ensure_indexes(db)
 UI = pathlib.Path(__file__).resolve().parent.parent / "ui" / "index.html"
+STOPS = {}  # scope -> threading.Event for searches started here
 
 
 def _clean(d):
@@ -26,6 +27,18 @@ def _clean(d):
 @app.get("/")
 def index():
     return FileResponse(UI)
+
+
+@app.get("/how")
+def how():
+    return FileResponse(UI.parent / "how.html")
+
+
+@app.post("/api/stop")
+def stop(scope: str):
+    if scope in STOPS:
+        STOPS[scope].set()
+    return {"stopping": scope in STOPS}
 
 
 @app.get("/api/scopes")
@@ -46,9 +59,10 @@ def run(scope: str, memory: str = "on", generations: int = 4, k: int = 4, workbe
     from .search import search
     from .workbench import make_workbench
     wb = make_workbench(workbench, eval_url or None, seed)
+    STOPS[scope] = threading.Event()
     threading.Thread(target=search, daemon=True, kwargs=dict(
         scope=scope, memory=memory == "on", generations=generations, k=k, workbench=wb,
-        task_id=task_id, task_input=task_input, seed=seed, db=db)).start()
+        task_id=task_id, task_input=task_input, seed=seed, db=db, stop=STOPS[scope])).start()
     return {"started": scope}
 
 

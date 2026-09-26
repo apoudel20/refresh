@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lineage · How it works</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600&display=swap">
+<style>
+:root{--bg:#0d1412;--panel:#131c19;--line:#25332d;--ink:#e2eae5;--mute:#8fa39a;--acc:#5ccfa8;--warn:#e7b85c;--bad:#e8776b;--cache:#8fb4ff;
+--sans:"IBM Plex Sans",system-ui,sans-serif;--mono:"IBM Plex Mono",ui-monospace,monospace;--cond:"IBM Plex Sans Condensed",sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--sans)}
+main{max-width:1100px;margin:0 auto;padding:24px 16px 48px}
+h1{font:600 26px var(--cond);margin:0 0 4px}h1 span{color:var(--acc)}
+.lede{color:var(--mute);margin:0 0 20px;max-width:760px}
+svg{width:100%;height:auto;display:block}
+.box{fill:var(--panel);stroke:var(--line);stroke-width:1.2}.proc{stroke:var(--acc)}.gate{stroke:var(--warn)}.mem{stroke:var(--cache)}
+.t{fill:var(--ink);font:600 14px var(--sans)}.s{fill:var(--mute);font:12px var(--mono)}.lbl{font:600 11px var(--cond);letter-spacing:.08em;text-transform:uppercase}
+.a{stroke:#6f857c;stroke-width:1.4;fill:none;marker-end:url(#ar)}.rd{stroke:var(--cache);stroke-dasharray:4 3}.skip{stroke:var(--warn);stroke-dasharray:3 3}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-top:22px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px}
+.card b{display:block;font:600 13px var(--cond);letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px}
+.card p{margin:0;color:var(--mute);font-size:14px}code{font:13px var(--mono);color:var(--ink)}
+a{color:var(--acc)}
+</style>
+</head>
+<body>
+<main>
+<h1>Lineage<span>.</span> How the long-term memory works</h1>
+<p class="lede">The <b>processor</b> is a genetic search over small DAGs of LLM agents. The <b>memory</b> is MongoDB Atlas: every agent, every combination tried, every node run and every event. Each step of the loop checks the memory first, so a search can run for days, stop, resume, and never pay twice for the same work.</p>
+
+<svg viewBox="0 0 1000 560" role="img" aria-label="The Lineage loop: generator, gates, runner and eval above; the Atlas memory below, read and written at every step">
+<defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#6f857c"/></marker></defs>
+<text x="20" y="28" class="lbl" fill="#5ccfa8">Processor: one generation</text>
+
+<!-- processor row -->
+<rect class="box proc" x="20" y="44" width="150" height="120" rx="6"/>
+<text class="t" x="34" y="68">1 · Generator</text>
+<text class="s" x="34" y="88">LLM proposals +</text><text class="s" x="34" y="104">mutations of the</text><text class="s" x="34" y="120">best structures</text>
+<text class="s" x="34" y="146">(elites from memory)</text>
+
+<rect class="box proc" x="190" y="44" width="150" height="120" rx="6"/>
+<text class="t" x="204" y="68">2 · A structure</text>
+<g stroke="#4a5d55" stroke-width="1.3"><line x1="265" y1="92" x2="235" y2="120"/><line x1="265" y1="92" x2="295" y2="120"/><line x1="235" y1="128" x2="265" y2="150"/><line x1="295" y1="128" x2="265" y2="150"/></g>
+<rect x="257" y="82" width="16" height="16" rx="4" fill="#b59cff"/><rect x="227" y="116" width="16" height="16" rx="4" fill="#5ccfa8"/>
+<rect x="287" y="116" width="16" height="16" rx="4" fill="#e7b85c"/><rect x="257" y="142" width="16" height="16" rx="4" fill="#e8776b"/>
+<text class="s" x="204" y="112">agents</text><text class="s" x="306" y="112">+</text><text class="s" x="306" y="128">tools</text>
+
+<rect class="box gate" x="360" y="44" width="150" height="120" rx="6"/>
+<text class="t" x="374" y="68">3 · Tried before?</text>
+<text class="s" x="374" y="88">canonical hash of</text><text class="s" x="374" y="104">the DAG → unique</text><text class="s" x="374" y="120">index on the worklog</text>
+<text class="s" x="374" y="146" fill="#e7b85c">yes → blocked</text>
+
+<rect class="box gate" x="530" y="44" width="150" height="120" rx="6"/>
+<text class="t" x="544" y="68">4 · Near-duplicate?</text>
+<text class="s" x="544" y="88">$vectorSearch over</text><text class="s" x="544" y="104">64-dim trait vectors</text><text class="s" x="544" y="120">cosine ≥ 0.97</text>
+<text class="s" x="544" y="146" fill="#e7b85c">yes → skipped</text>
+
+<rect class="box proc" x="700" y="44" width="150" height="120" rx="6"/>
+<text class="t" x="714" y="68">5 · Run each node</text>
+<text class="s" x="714" y="88">same agent + same</text><text class="s" x="714" y="104">inputs seen before?</text><text class="s" x="714" y="120" fill="#8fb4ff">yes → reuse output</text>
+<text class="s" x="714" y="146">no → call tools</text>
+
+<rect class="box proc" x="870" y="44" width="110" height="120" rx="6"/>
+<text class="t" x="884" y="68">6 · Eval</text>
+<text class="s" x="884" y="88">fitness 0–1</text><text class="s" x="884" y="104">running mean,</text><text class="s" x="884" y="120">n, variance</text>
+
+<path class="a" d="M170 104H188"/><path class="a" d="M340 104H358"/><path class="a" d="M510 104H528"/><path class="a" d="M680 104H698"/><path class="a" d="M850 104H868"/>
+<path class="a skip" d="M435 164V200H96V166"/><text class="s" x="190" y="196" fill="#e7b85c">blocked or skipped: no cost, propose another</text>
+<path class="a skip" d="M605 164V200"/>
+
+<!-- memory -->
+<text x="20" y="262" class="lbl" fill="#8fb4ff">Memory: MongoDB Atlas (hackathon cluster)</text>
+<rect class="box mem" x="20" y="276" width="960" height="190" rx="8" fill-opacity=".6"/>
+<g>
+<rect class="box" x="40" y="296" width="215" height="150" rx="6"/><text class="t" x="54" y="320">agents</text>
+<text class="s" x="54" y="342">role, brief, tools</text><text class="s" x="54" y="358">agent_hash (identity)</text><text class="s" x="54" y="374">trait_vec → agent_vec</text><text class="s" x="54" y="390">lineage of mutations</text>
+<rect class="box" x="275" y="296" width="215" height="150" rx="6"/><text class="t" x="289" y="320">structures = worklog</text>
+<text class="s" x="289" y="342">every combination tried</text><text class="s" x="289" y="358">structure_hash (unique)</text><text class="s" x="289" y="374">fitness {mean, n, var}</text><text class="s" x="289" y="390">trait_vec → struct_vec</text><text class="s" x="289" y="406">parents ($graphLookup)</text>
+<rect class="box" x="510" y="296" width="215" height="150" rx="6"/><text class="t" x="524" y="320">modules = node cache</text>
+<text class="s" x="524" y="342">input_key = H(agent,</text><text class="s" x="524" y="358">  parent outputs)</text><text class="s" x="524" y="374">→ output + tool trace</text><text class="s" x="524" y="390">Bazel / Nix style</text>
+<rect class="box" x="745" y="296" width="215" height="150" rx="6"/><text class="t" x="759" y="320">events</text>
+<text class="s" x="759" y="342">append-only log of</text><text class="s" x="759" y="358">every step</text><text class="s" x="759" y="374">change stream →</text><text class="s" x="759" y="390">live UI</text>
+</g>
+<!-- reads and writes -->
+<path class="a rd" d="M95 294V166"/><text class="s" x="100" y="240" fill="#8fb4ff">elites, failures</text>
+<path class="a rd" d="M435 294V202"/><path class="a rd" d="M605 294V202"/>
+<path class="a rd" d="M775 166V294"/><path class="a rd" d="M760 294V166"/>
+<path class="a rd" d="M925 166V294"/>
+<path class="a" d="M925 44V20H96V42"/><text class="s" x="420" y="16" fill="#5ccfa8">next generation: build on what scored, avoid what didn't</text>
+
+<text x="20" y="500" class="s" fill="#e2eae5">Stop at any point → the memory is already in Atlas → press Start / resume on the same scope → the search continues where it left off.</text>
+<text x="20" y="524" class="s">Memory OFF (same budget, same seed): no gates, no cache. It re-runs work it already did.</text>
+</svg>
+
+<div class="grid">
+<div class="card"><b>The processor</b><p>Each structure is a small DAG of agents (at most 6 nodes, depth 3). An agent's identity is its traits: role, brief, model and tools. The generator mutates the best structures, and an LLM proposes new ones from a summary of the memory.</p></div>
+<div class="card"><b>The worklog</b><p><code>structures</code> records every combination ever tried, keyed by a canonical hash. The same DAG drawn differently hashes the same, and a unique index turns "have we tried this?" into one lookup.</p></div>
+<div class="card"><b>The node cache</b><p><code>modules</code> stores each node's output under <code>H(agent, inputs)</code>. When a new structure shares a prefix with an old one, those nodes are reused, not rerun. The dashed nodes in the UI are these reuses.</p></div>
+<div class="card"><b>Measured</b><p>Same budget, memory ON vs OFF: the same best fitness (0.91 vs 0.92) with 62 tool calls instead of 143, and zero wasted repeats vs four.</p></div>
+</div>
+<p style="margin-top:22px"><a href="/">← back to the live search</a></p>
+</main>
+</body>
+</html>
