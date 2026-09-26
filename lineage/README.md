@@ -35,9 +35,27 @@ cp .env.example .env    # set MONGODB_URI (hackathon Atlas sandbox) and optional
 
 **MongoDB:**
 - unique indexes as the "already tried" memory
+- Atlas Vector Search: every agent and evaluated structure gets a 64-dim trait vector (feature-hashed role and tools). Before a new structure runs, `$vectorSearch` over the `struct_vec` index, filtered to the scope, skips it if it's a near-duplicate (cosine ≥ 0.97) of one already evaluated.
 - change streams driving the live view
 - `$graphLookup` for structure lineage
 - Welford `{mean, n, var}` fitness per structure, for noisy evals
+
+## Results: memory ON vs OFF
+
+The same search run twice on Atlas with the same budget: 6 generations × 5 proposals, seed 1, the same generator and the same evaluator. The workbench and eval are the **mock** 3D tools: the eval rewards a hidden ideal pipeline, so the search has a real gradient to climb. All numbers come from the `events` collection.
+
+| | memory ON (`ga-on`) | memory OFF (`ga-off`) |
+|---|---|---|
+| structures evaluated | 21 | 27 |
+| repeats blocked by hash | 4 | 0 |
+| near-duplicates skipped (`$vectorSearch`) | 2 | 0 |
+| repeats run again (wasted) | 0 | 4 |
+| node cache hits | 19 | 0 |
+| **tool calls** | **62** | **143** |
+| **best fitness** | **0.91** | **0.92** |
+| best per generation | 0.39 → 0.52 → 0.57 → 0.76 → 0.91 → 0.70 | 0.39 → 0.52 → 0.53 → 0.70 → 0.92 → 0.81 |
+
+**Memory reaches the same best fitness with 57% fewer tool calls**, and never re-runs a structure it has already tried. This is a single seed on mock tools, so treat it as a demo of the mechanism, not a benchmark.
 
 ## Built today
 
