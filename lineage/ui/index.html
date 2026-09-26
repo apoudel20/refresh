@@ -54,7 +54,7 @@ h2{font:600 12px var(--cond);text-transform:uppercase;letter-spacing:.08em;color
     <input id="gens" class="n" type="number" value="4" min="1" aria-label="Generations" title="generations">
     <input id="k" class="n" type="number" value="4" min="1" aria-label="Structures per generation" title="structures per generation">
     <input id="wb" value="mock" aria-label="Workbench" title="tools: mock or workbench URL"><input id="ev" placeholder="eval URL (optional)" aria-label="Eval engine URL" title="eval engine URL; blank = workbench/mock">
-    <button id="start">Start / resume</button><button id="stop">Stop</button><button id="load">Watch scope</button><a href="/how" target="_blank" style="color:var(--acc);font-size:13px;margin-left:6px">How it works ↗</a>
+    <button id="new">New run</button><button id="start">Start / resume</button><button id="stop">Stop</button><button id="load">Watch scope</button><a href="/how" target="_blank" style="color:var(--acc);font-size:13px;margin-left:6px">How it works ↗</a>
   </div>
   <div class="counters">
     <span class="mem" id="memBadge">—</span>
@@ -85,7 +85,7 @@ function apply(e){
   const s=e.structure_hash;
   switch(e.kind){
     case 'search_started':case 'resume':S.memory=e.memory;S.status=e.kind==='resume'?`resumed from Atlas at generation ${e.gen}`:'running';break;
-    case 'stopped':S.status=`stopped in generation ${e.gen}: press Start / resume to continue from Atlas`;break;
+    case 'stopped':if(S.structs[s]&&S.structs[s].status==='running')S.structs[s].status='stopped';S.status=`stopped in generation ${e.gen}: press Start / resume to continue from Atlas`;break;
     case 'structure_started':S.structs[s]={...(S.structs[s]||{}),gen:e.gen,origin:e.origin,nodes:e.nodes,edges:e.edges,status:'running'};
       if(!S.order.includes(s))S.order.push(s);S.cur=s;S.nodes[s]={};e.nodes.forEach(n=>S.nodes[s][n.node_id]={state:'queued'});break;
     case 'node_started':(S.nodes[s]||={})[e.node_id]={state:'running'};break;
@@ -128,7 +128,7 @@ function drawGallery(){
     const edges=x.edges.map(e=>{const a=pos[e.from],b=pos[e.to];return a&&b?`<line x1="${a.x+8}" y1="${a.y+8}" x2="${b.x+8}" y2="${b.y+8}" stroke="#4a5d55" stroke-width="1.2"/>`:'';}).join('');
     const nodes=x.nodes.map(n=>{const p=pos[n.node_id],s=(st[n.node_id]||{}).state;
       return `<rect x="${p.x}" y="${p.y}" width="${bw}" height="${bh}" rx="4" fill="${COLORS[n.role]||'#8fa39a'}" fill-opacity="${s==='queued'&&x.status==='running'?0.25:0.9}" ${s==='cached'?'stroke="#8fb4ff" stroke-width="2" stroke-dasharray="3 2"':''}${s==='running'?' class="pulse"':''}/>`;}).join('');
-    const label=x.near!=null?`near-duplicate ${x.near.toFixed(2)}`:x.status==='blocked'?`blocked · ${x.reason}`:f!=null?`fitness ${f.toFixed(2)}`:'running…';
+    const label=x.near!=null?`near-duplicate ${x.near.toFixed(2)}`:x.status==='blocked'?`blocked · ${x.reason}`:f!=null?`fitness ${f.toFixed(2)}`:x.status==='stopped'?'stopped · resumes from memory':'running…';
     return `<button class="card ${cls} ${k===S.sel?'sel':''}" data-k="${k}" title="${x.origin}"><svg viewBox="0 0 ${W} ${H-18}" width="100%" height="${H-18}">${edges}${nodes}</svg>
       <div class="cap"><span>${x.origin.replace('mutation:','mut:')}</span><b style="color:${f!=null?`hsl(${150*f},55%,62%)`:'var(--mute)'}">${label}</b></div>
       <div class="fbar"><i style="width:${(f??0)*100}%;background:hsl(${150*(f??0)},55%,52%)"></i></div></button>`;}).join('');
@@ -168,7 +168,8 @@ async function watch(scope){
   es.onmessage=m=>{apply(JSON.parse(m.data));if(!pend){pend=true;setTimeout(()=>{pend=false;render();},120);}};
 }
 $('load').onclick=()=>watch($('scope').value);
-$('stop').onclick=()=>fetch('/api/stop?scope='+encodeURIComponent($('scope').value),{method:'POST'});
+$('stop').onclick=()=>{S.status='stopping…';render();fetch('/api/stop?scope='+encodeURIComponent($('scope').value),{method:'POST'});};
+$('new').onclick=()=>{const d=new Date(),p=n=>String(n).padStart(2,'0');$('scope').value=`run-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;watch($('scope').value);};
 $('start').onclick=async()=>{const q=new URLSearchParams({scope:$('scope').value,memory:$('memory').value,generations:$('gens').value,k:$('k').value,workbench:$('wb').value,eval_url:$('ev').value});
   await watch($('scope').value);await fetch('/api/run?'+q,{method:'POST'});};
 window.onresize=()=>S&&render();

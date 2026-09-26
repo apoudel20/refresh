@@ -19,7 +19,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 db = get_db()
 ensure_indexes(db)
 UI = pathlib.Path(__file__).resolve().parent.parent / "ui" / "index.html"
-STOPS = {}  # scope -> threading.Event for searches started here
+STOPS, RUNNING = {}, {}  # scope -> stop Event / search thread, for searches started here
 
 
 def _clean(d):
@@ -62,11 +62,14 @@ def run(scope: str, memory: str = "on", generations: int = 4, k: int = 4, workbe
     """Start a search in this process (needed for local mongomock; works the same on Atlas)."""
     from .search import search
     from .workbench import make_workbench
+    if scope in RUNNING and RUNNING[scope].is_alive():
+        return {"already_running": scope}
     wb = make_workbench(workbench, eval_url or None, seed)
     STOPS[scope] = threading.Event()
-    threading.Thread(target=search, daemon=True, kwargs=dict(
+    RUNNING[scope] = threading.Thread(target=search, daemon=True, kwargs=dict(
         scope=scope, memory=memory == "on", generations=generations, k=k, workbench=wb,
-        task_id=task_id, task_input=task_input, seed=seed, db=db, stop=STOPS[scope])).start()
+        task_id=task_id, task_input=task_input, seed=seed, db=db, stop=STOPS[scope]))
+    RUNNING[scope].start()
     return {"started": scope}
 
 

@@ -40,11 +40,13 @@ class Runner:
                     return calls, out.get("note", "")
         return [{"tool_id": t, "args": {}} for t in allowed], "default plan: allowed tools in registry order"
 
-    def run(self, s_hash, nodes, edges, task_input, gen):
-        """nodes: {node_id: genome}. Returns (sink artifacts, cost_usd)."""
+    def run(self, s_hash, nodes, edges, task_input, gen, stop=None):
+        """nodes: {node_id: genome}. Returns (sink artifacts, cost_usd), or (None, cost) if stopped mid-structure."""
         order, preds = topo(nodes, edges)
         outputs, cost = {}, 0.0
         for nid in order:
+            if stop is not None and stop.is_set():
+                return None, cost
             g = nodes[nid]
             inputs = [outputs[p] for p in preds[nid]] or [task_input]
             ik = input_key(self.ns, g["agent_hash"], [i["hash"] for i in inputs])

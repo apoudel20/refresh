@@ -50,7 +50,8 @@ def search(scope, memory, generations, k, workbench, task_id, task_input, seed=0
     is_file = pathlib.Path(task_input).is_file()  # a file path is passed through so the workbench can open it
     task_art = {"ref": str(task_input) if is_file else f"task:{task_hash[:12]}", "hash": task_hash, "chain": [],
                 "summary": f"task input {task_id}"}
-    gen0 = 1 + max([d.get("generation", -1) for d in db.structures.find({"scope": scope}, {"generation": 1})], default=-1)
+    # resume in the first generation that didn't finish (a stopped generation is continued, not skipped)
+    gen0 = 1 + max([e["gen"] for e in db.events.find({"scope": scope, "kind": "generation_done"}, {"gen": 1})], default=-1)
     gen_ = Generator(db, scope, registry, memory, seed=seed + gen0, model=model)
     runner = Runner(db, workbench, scope, ns, registry, use_cache=memory)
     log(db, scope, "resume" if gen0 else "search_started", memory=memory, gen=gen0, vector_gate=vec_gate)
@@ -90,7 +91,10 @@ def search(scope, memory, generations, k, workbench, task_id, task_input, seed=0
                 "created": time.time()}}, upsert=True)
             log(db, scope, "structure_started", gen=gen, structure_hash=s_hash, origin=cand["origin"],
                 nodes=node_docs, edges=cand["edges"])
-            sinks, cost = runner.run(s_hash, nodes, cand["edges"], task_art, gen)
+            sinks, cost = runner.run(s_hash, nodes, cand["edges"], task_art, gen, stop)
+            if sinks is None:  # stopped mid-structure: finished nodes are already in memory and get reused on resume
+                log(db, scope, "stopped", gen=gen, structure_hash=s_hash)
+                return db
             ev = workbench.evaluate(task_id, s_hash, sinks)
             fit = record_fitness(db, scope, s_hash, ev["fitness"])
             db.structures.update_one({"scope": scope, "structure_hash": s_hash},
