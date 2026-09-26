@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 620" role="img" aria-labelledby="title">
+  <title id="title">Refresh logo</title>
+  <!-- Geometric mark traced from the user-provided reference image. -->
+  <path fill="#65baf2" d="M125 0 500 186 375 248 0 62Z"/>
+  <path fill="#0875f7" d="m0 62 375 186v434L0 496Zm123 211v127l126 63V335Z"/>
+  <path fill="#082b78" d="m375 248 125-62v434l-125 62Z"/>
+  <path fill="#082b78" d="m123 273 126 62 0 127-126-62Z"/>
+  <path fill="#68baf2" d="m249 462 126 62v124l-126-62Z"/>
+</svg>
