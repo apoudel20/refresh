@@ -62,3 +62,31 @@ python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
 5. **Budget.** A real structure takes minutes and costs real money, so run small generations (k = 3–4) and lean on the cache.
 
 Hop 1 is done. Hops 2 and 3 need someone with Blender running. Once they exist, hops 4 and 5 are small Lineage changes.
+
+## Running the real thing on Denis's laptop (Blender + MCP add-on on port 9876)
+Windows paths shown; each server needs its own terminal.
+```
+git clone https://github.com/apoudel20/refresh && cd refresh      # or: git pull
+git worktree add ../refresh-team origin/image-and-score-skills   # the Blender harness, untouched
+cd lineage
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt openai httpx numpy pillow python-multipart
+# lineage\.env: MONGODB_URI=<Atlas>, OPENROUTER_API_KEY=..., REPLICATE_API_TOKEN=... (depth model)
+
+# terminal 1: Blender workbench (tools + render eval) on :8150
+set BLENDER_HARNESS=..\..\refresh-team\blender-agent-harness
+set LINEAGE_REFERENCE=C:\full\path\to\reference.png
+.venv\Scripts\python -m uvicorn lineage.blender_workbench:app --port 8150
+
+# terminal 2: the Lineage UI on :8130
+.venv\Scripts\python -m uvicorn lineage.server:app --port 8130
+
+# terminal 3: the search (small budget: every structure renders + gets judged)
+.venv\Scripts\python -m lineage.search --scope blender-1 --memory on --generations 3 --k 3 --workbench http://localhost:8150 --task-input C:\full\path\to\reference.png
+```
+Open http://localhost:8130, type `blender-1` in the scope field and click **Watch scope**.
+
+Workbench tools (each is a stateless file-to-file step, so the node cache stays correct):
+`depth_pointcloud` → `hull_mesh` → `remesh` / `smooth` / `subdivide` / `decimate` / `uv_unwrap`.
+The eval renders the final mesh in Blender and scores it against the reference with the team's evaluator (OpenRouter).
+A failed step passes its input through with an error instead of crashing the search.
