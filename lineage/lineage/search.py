@@ -21,7 +21,7 @@ def gate(db, scope, s_hash, elite_hashes):
 
 
 def search(scope, memory, generations, k, workbench, task_id, task_input, seed=0, model=None, db=None):
-    db = db or get_db()
+    db = db if db is not None else get_db()
     ensure_indexes(db)
     registry = workbench.tools()
     task_hash = content_hash(pathlib.Path(task_input).read_bytes() if pathlib.Path(task_input).is_file() else task_input)
