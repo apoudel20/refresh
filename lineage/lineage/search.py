@@ -47,7 +47,9 @@ def search(scope, memory, generations, k, workbench, task_id, task_input, seed=0
     registry = workbench.tools()
     task_hash = content_hash(pathlib.Path(task_input).read_bytes() if pathlib.Path(task_input).is_file() else task_input)
     ns = namespace(task_id, task_hash, workbench.eval_version, H(registry))
-    task_art = {"ref": f"task:{task_hash[:12]}", "hash": task_hash, "chain": [], "summary": f"task input {task_id}"}
+    is_file = pathlib.Path(task_input).is_file()  # a file path is passed through so the workbench can open it
+    task_art = {"ref": str(task_input) if is_file else f"task:{task_hash[:12]}", "hash": task_hash, "chain": [],
+                "summary": f"task input {task_id}"}
     gen0 = 1 + max([d.get("generation", -1) for d in db.structures.find({"scope": scope}, {"generation": 1})], default=-1)
     gen_ = Generator(db, scope, registry, memory, seed=seed + gen0, model=model)
     runner = Runner(db, workbench, scope, ns, registry, use_cache=memory)
@@ -93,7 +95,8 @@ def search(scope, memory, generations, k, workbench, task_id, task_input, seed=0
             fit = record_fitness(db, scope, s_hash, ev["fitness"])
             db.structures.update_one({"scope": scope, "structure_hash": s_hash},
                                      {"$set": {"metrics": ev.get("metrics"), "per_node": ev.get("per_node"), "cost_usd": cost,
-                                              "trait_vec": structure_vec(node_docs)}})
+                                              "trait_vec": structure_vec(node_docs),
+                                              "outputs": [{"ref": a.get("ref"), "hash": a.get("hash")} for a in sinks]}})
             log(db, scope, "eval", gen=gen, structure_hash=s_hash, fitness=ev["fitness"], mean=fit["mean"], n=fit["n"], cost_usd=cost)
             this_gen.append({**cand, "structure_hash": s_hash, "fitness": ev["fitness"]})
         gen_.last_gen = this_gen or gen_.last_gen

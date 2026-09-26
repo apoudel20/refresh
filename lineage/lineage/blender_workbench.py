@@ -99,10 +99,14 @@ def call(body: dict):
     try:
         with _lock:
             if tool_id == "depth_pointcloud":
+                global REFERENCE
                 from blender_agent.pointcloud import ImageToPointCloud
-                ImageToPointCloud().convert(REFERENCE, str(out))
+                img = next((i["ref"] for i in inputs if str(i.get("ref", "")).lower().endswith((".png", ".jpg", ".jpeg"))
+                            and os.path.isfile(i["ref"])), REFERENCE)
+                REFERENCE = img  # the eval scores against the image this search started from
+                ImageToPointCloud().convert(img, str(out))
             else:
-                if not src:
+                if not src or src["ref"] == REFERENCE:
                     raise ValueError("needs a mesh or point cloud input")
                 _load(src["ref"])
                 blender().execute_python("import bpy\n" + code)
@@ -114,6 +118,16 @@ def call(body: dict):
         passthru = src or (inputs[0] if inputs else {"ref": "", "hash": "none"})
         return {"output_ref": passthru["ref"], "output_hash": passthru["hash"], "chain": chain, "cost_usd": 0.0,
                 "error": str(e)[:300], "summary": f"{tool_id} failed: {str(e)[:120]}"}
+
+
+@app.post("/export")
+def export(body: dict):
+    """Convert a mesh output to .glb for the Refresh UI's viewer."""
+    out = WORK / f"model-{uuid.uuid4().hex[:10]}.glb"
+    with _lock:
+        _load(body["ref"])
+        blender().export_file(str(out), "glb")
+    return {"path": str(out)}
 
 
 @app.post("/eval")

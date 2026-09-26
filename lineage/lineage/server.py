@@ -3,15 +3,19 @@ import asyncio
 import json
 import pathlib
 import threading
+import os
 import time
+import uuid
 
-from fastapi import FastAPI
+from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pymongo.errors import PyMongoError
 
 from .store import ensure_indexes, get_db
 
 app = FastAPI()
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 db = get_db()
 ensure_indexes(db)
 UI = pathlib.Path(__file__).resolve().parent.parent / "ui" / "index.html"
@@ -125,3 +129,97 @@ async def stream(scope: str, since: float = 0.0):
             stop.set()
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+# ── Refresh UI contract (uipack/app/lib/harness-client.ts): an upload starts a Lineage search on that image ──
+RUNS = pathlib.Path(os.getenv("LINEAGE_WORKDIR", "lineage_work")).resolve() / "runs"
+WORKBENCH = os.getenv("LINEAGE_WORKBENCH", "mock")  # or the Blender workbench URL, e.g. http://localhost:8150
+DEMO_MODEL = os.getenv("LINEAGE_DEMO_MODEL", "http://localhost:3000/assets/demo-pigeon.glb")
+RECON = {}  # run_id -> {"thread", "image", "model"}
+
+
+def _start_recon(run_id, image, generations):
+    from .search import search
+    from .workbench import make_workbench
+    t = threading.Thread(target=search, daemon=True, kwargs=dict(
+        scope=run_id, memory=True, generations=generations, k=int(os.getenv("RECON_K", "4")),
+        workbench=make_workbench(WORKBENCH), task_id="refresh-ui", task_input=image, db=db))
+    RECON.setdefault(run_id, {"image": image})["thread"] = t
+    t.start()
+
+
+@app.post("/api/reconstructions")
+async def reconstruct(images: list[UploadFile] = File(...), projectId: str = Form("")):
+    run_id = f"recon-{uuid.uuid4().hex[:8]}"
+    d = RUNS / run_id
+    d.mkdir(parents=True, exist_ok=True)
+    image = d / f"reference{pathlib.Path(images[0].filename or 'x.png').suffix or '.png'}"
+    image.write_bytes(await images[0].read())
+    _start_recon(run_id, str(image), int(os.getenv("RECON_GENERATIONS", "3")))
+    return {"runId": run_id, "eventsUrl": f"/api/reconstructions/{run_id}/events"}
+
+
+def _update(e):
+    k, g = e["kind"], e.get("gen")
+    if k in ("search_started", "resume"):
+        return {"type": "status", "status": f"Lineage: searching agent structures from memory (generation {g})"}
+    if k == "structure_started":
+        return {"type": "status", "status": f"Generation {g}: running a {len(e.get('nodes', []))}-agent structure ({e.get('origin')})"}
+    if k == "blocked":
+        return {"type": "status", "status": "Memory: skipped a structure already tried"}
+    if k == "near_dup":
+        return {"type": "status", "status": f"Memory: skipped a near-duplicate ($vectorSearch {e.get('score', 0):.2f})"}
+    if k == "cache_hit":
+        return {"type": "status", "status": "Memory: reused a node's output"}
+    if k == "generation_done" and e.get("best") is not None:
+        return {"type": "metric", "similarity": round(100 * e["best"], 1), "status": f"Generation {g} done"}
+    return None
+
+
+def _model_url(run_id, base):
+    """GLB of the best structure: exported by the Blender workbench, or the UI's demo model on the mock workbench."""
+    best = db.structures.find_one({"scope": run_id, "fitness.n": {"$gte": 1}}, sort=[("fitness.mean", -1)])
+    ref = ((best or {}).get("outputs") or [{}])[0].get("ref")
+    if WORKBENCH != "mock" and ref and os.path.isfile(ref):
+        import requests
+        RECON[run_id]["model"] = requests.post(f"{WORKBENCH.rstrip('/')}/export", json={"ref": ref}, timeout=300).json()["path"]
+        return f"{base}api/reconstructions/{run_id}/model.glb?v={uuid.uuid4().hex[:6]}", (best or {}).get("structure_hash")
+    return DEMO_MODEL, (best or {}).get("structure_hash")
+
+
+@app.get("/api/reconstructions/{run_id}/events")
+async def recon_events(run_id: str, request: Request):
+    base = str(request.base_url)
+
+    async def gen():
+        last = 0.0
+        while True:
+            evs = await asyncio.to_thread(lambda: list(db.events.find({"scope": run_id, "t": {"$gt": last}}).sort("t", 1)))
+            for e in evs:
+                last = e["t"]
+                u = _update(e)
+                if u:
+                    yield f"data: {json.dumps(u)}\n\n"
+            t = RECON.get(run_id, {}).get("thread")
+            if not evs and (t is None or not t.is_alive()):
+                url, mid = await asyncio.to_thread(_model_url, run_id, base)
+                yield f"data: {json.dumps({'type': 'model', 'modelUrl': url, 'modelId': mid, 'status': 'Model ready'})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.get("/api/reconstructions/{run_id}/model.glb")
+def recon_model(run_id: str):
+    return FileResponse(RECON[run_id]["model"], media_type="model/gltf-binary")
+
+
+@app.post("/api/reconstructions/{run_id}/refine")
+async def recon_refine(run_id: str, request: Request):
+    """Refinement = resume the same search for one more generation, building on its memory."""
+    _start_recon(run_id, RECON[run_id]["image"], 1)
+    await asyncio.to_thread(RECON[run_id]["thread"].join)
+    url, mid = await asyncio.to_thread(_model_url, run_id, str(request.base_url))
+    return {"modelUrl": url, "modelId": mid}
