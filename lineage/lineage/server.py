@@ -38,6 +38,16 @@ def how():
     return FileResponse(UI.parent / "how.html")
 
 
+@app.get("/generations")
+def generations():
+    return FileResponse(UI.parent / "generations.html")
+
+
+@app.get("/api/structures")
+def structures(scope: str):
+    return [_clean(d) for d in db.structures.find({"scope": scope}, {"trait_vec": 0}).sort("generation", 1)]
+
+
 @app.post("/api/stop")
 def stop(scope: str):
     if scope in STOPS:

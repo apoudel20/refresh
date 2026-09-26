@@ -54,7 +54,7 @@ h2{font:600 12px var(--cond);text-transform:uppercase;letter-spacing:.08em;color
     <input id="gens" class="n" type="number" value="4" min="1" aria-label="Generations" title="generations">
     <input id="k" class="n" type="number" value="4" min="1" aria-label="Structures per generation" title="structures per generation">
     <input id="wb" value="mock" aria-label="Workbench" title="tools: mock or workbench URL"><input id="ev" placeholder="eval URL (optional)" aria-label="Eval engine URL" title="eval engine URL; blank = workbench/mock">
-    <button id="new">New run</button><button id="start">Start / resume</button><button id="stop">Stop</button><button id="load">Watch scope</button><a href="/how" target="_blank" style="color:var(--acc);font-size:13px;margin-left:6px">How it works ↗</a>
+    <button id="new">New run</button><button id="start">Start / resume</button><button id="stop">Stop</button><button id="load">Watch scope</button><a id="genLink" href="/generations" target="_blank" style="color:var(--acc);font-size:13px;margin-left:6px" onclick="this.href='/generations?scope='+encodeURIComponent(document.getElementById('scope').value)">All generations ↗</a><a href="/how" target="_blank" style="color:var(--acc);font-size:13px;margin-left:6px">How it works ↗</a>
   </div>
   <div class="counters">
     <span class="mem" id="memBadge">—</span>

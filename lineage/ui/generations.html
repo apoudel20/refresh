@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lineage · Generations</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600&display=swap">
+<style>
+:root{--bg:#0d1412;--panel:#131c19;--line:#25332d;--ink:#e2eae5;--mute:#8fa39a;--acc:#5ccfa8;--warn:#e7b85c;--bad:#e8776b;--cache:#8fb4ff;
+--sans:"IBM Plex Sans",system-ui,sans-serif;--mono:"IBM Plex Mono",ui-monospace,monospace;--cond:"IBM Plex Sans Condensed",sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 var(--sans)}
+header{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:2}
+h1{font:600 20px var(--cond);margin:0}h1 span{color:var(--acc)}
+select,a.btn{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:5px 8px;font:13px var(--sans)}
+a{color:var(--acc)}
+main{padding:16px;max-width:1400px;margin:0 auto}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 12px}
+.tile b{display:block;font:500 24px var(--mono);font-variant-numeric:tabular-nums}.tile small{color:var(--mute);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+.tile i{font-style:normal;color:var(--mute);font:12px var(--mono)}
+.chartbox{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 12px;position:relative}
+.chartbox h2,.gen h2{font:600 12px var(--cond);text-transform:uppercase;letter-spacing:.08em;color:var(--mute);margin:0 0 6px}
+.legend{display:flex;gap:14px;font-size:12px;color:var(--mute);margin-bottom:4px}.legend span::before{content:"";display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px;background:var(--c)}
+#chart{width:100%;height:220px;display:block}
+.tip{position:absolute;pointer-events:none;background:#0a100e;border:1px solid var(--line);border-radius:4px;padding:6px 8px;font:12px var(--mono);display:none;white-space:nowrap;z-index:3}
+.gen{margin-top:22px}.gen h2{font-size:13px;color:var(--ink);display:flex;flex-wrap:wrap;gap:4px 14px;align-items:baseline}
+.gen h2 em{font:12px var(--mono);color:var(--mute);font-style:normal;text-transform:none;letter-spacing:0}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px 10px;scroll-margin-top:80px}
+.card.best{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}.card.ghost{opacity:.5;border-style:dashed}.card.flash{box-shadow:0 0 0 2px var(--warn)}
+.card svg{width:100%;display:block}
+.row{display:flex;justify-content:space-between;gap:6px;font:12px var(--mono);color:var(--mute)}
+.fit{font:500 18px var(--mono);color:var(--ink)}
+.bar{height:4px;background:var(--line);border-radius:2px;margin:4px 0}.bar i{display:block;height:100%;border-radius:2px;background:var(--acc)}
+.tag{font:11px var(--mono);padding:1px 5px;border-radius:3px;border:1px solid var(--line);color:var(--mute)}
+.tag.w{color:var(--warn);border-color:#5a4a2a}.tag.c{color:var(--cache);border-color:#2f3f5c}
+.metrics{font:11px var(--mono);color:var(--mute);margin-top:4px;overflow-wrap:anywhere}
+.empty{color:var(--mute)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Lineage<span>.</span> Generations</h1>
+  <label>scope <select id="scope" aria-label="Scope"></select></label>
+  <label>compare with <select id="vs" aria-label="Compare scope"><option value="">—</option></select></label>
+  <a class="btn" href="/">← live search</a><a class="btn" href="/how">How it works</a>
+</header>
+<main>
+  <div class="tiles" id="tiles"></div>
+  <div class="chartbox"><h2>Fitness of every evaluation, by generation</h2>
+    <div class="legend"><span style="--c:#8fa39a">one evaluated structure</span><span style="--c:#5ccfa8">best so far</span></div>
+    <svg id="chart" role="img" aria-label="Fitness by generation"></svg><div class="tip" id="tip"></div></div>
+  <div id="gens"><p class="empty">Loading…</p></div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const COLORS={planner:'#b59cff',preprocessor:'#8fb4ff',geometry:'#5ccfa8',refiner:'#e7b85c',texturer:'#f08fb8',verifier:'#e8776b'};
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function load(scope){
+  const [st,structs]=await Promise.all([fetch(`/api/state?scope=${encodeURIComponent(scope)}`).then(r=>r.json()),fetch(`/api/structures?scope=${encodeURIComponent(scope)}`).then(r=>r.json())]);
+  const byHash={};structs.forEach(s=>byHash[s.structure_hash]=s);
+  const gens={},cache={},calls={};let toolCalls=0,memory=null;
+  const G=g=>gens[g]??={evals:[],ghosts:[],cache:0,done:false,best:null};
+  for(const e of st.events){
+    if(e.kind==='search_started'||e.kind==='resume')memory=e.memory;
+    if(e.kind==='tool_called')toolCalls++;
+    if(e.kind==='cache_hit'){G(e.gen).cache++;(cache[e.structure_hash+e.gen]??=new Set()).add(e.node_id);}
+    if(e.kind==='node_done')(calls[e.structure_hash+e.gen]??={})[e.node_id]=e.calls;
+    if(e.kind==='eval')G(e.gen).evals.push({...e,doc:byHash[e.structure_hash]});
+    if(e.kind==='blocked'||e.kind==='near_dup'||e.kind==='repeat')G(e.gen).ghosts.push(e);
+    if(e.kind==='generation_done'){G(e.gen).done=true;G(e.gen).best=e.best;}
+  }
+  return {scope,gens,cache,calls,toolCalls,memory,events:st.events};
+}
+function summary(d){
+  const ev=d.events;const n=k=>ev.filter(e=>e.kind===k).length;
+  const fits=ev.filter(e=>e.kind==='eval').map(e=>e.fitness);
+  return {best:fits.length?Math.max(...fits):null,evals:fits.length,blocked:n('blocked'),near:n('near_dup'),repeats:n('repeat'),cache:n('cache_hit'),calls:d.toolCalls,gens:Object.keys(d.gens).length};
+}
+function tiles(a,b){
+  const A=summary(a),B=b&&summary(b);
+  const t=(label,k,fmt=v=>v)=>`<div class="tile"><b>${A[k]==null?'–':fmt(A[k])}</b><small>${label}</small>${B?`<br><i>${b.scope}: ${B[k]==null?'–':fmt(B[k])}</i>`:''}</div>`;
+  $('tiles').innerHTML=`<div class="tile"><b style="color:${a.memory===false?'var(--warn)':'var(--acc)'}">${a.memory===false?'OFF':'ON'}</b><small>memory</small>${B?`<br><i>${b.scope}: ${b.memory===false?'OFF':'ON'}</i>`:''}</div>`+
+    t('best fitness','best',v=>v.toFixed(2))+t('generations','gens')+t('structures evaluated','evals')+t('tool calls','calls')+t('node cache hits','cache')+t('repeats blocked','blocked')+t('near-dups skipped','near')+t('repeats re-run','repeats');
+}
+function chart(d){
+  const svg=$('chart'),W=svg.clientWidth||900,H=220,pl=36,pr=14,pt=10,pb=26;svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
+  const gs=Object.keys(d.gens).map(Number).sort((a,b)=>a-b);if(!gs.length){svg.innerHTML='';return;}
+  const g0=gs[0],g1=Math.max(gs[gs.length-1],g0+1),X=g=>pl+(g-g0)*(W-pl-pr)/(g1-g0),Y=v=>pt+(1-v)*(H-pt-pb);
+  let out='';[0,.25,.5,.75,1].forEach(v=>out+=`<line x1="${pl}" x2="${W-pr}" y1="${Y(v)}" y2="${Y(v)}" stroke="#25332d"/><text x="${pl-6}" y="${Y(v)+4}" fill="#8fa39a" font-size="11" text-anchor="end">${v}</text>`);
+  gs.forEach(g=>out+=`<text x="${X(g)}" y="${H-8}" fill="#8fa39a" font-size="11" text-anchor="middle">gen ${g}</text>`);
+  let best=0;const line=[];gs.forEach(g=>{d.gens[g].evals.forEach(e=>best=Math.max(best,e.fitness));line.push(`${X(g)},${Y(best)}`);});
+  out+=`<polyline points="${line.join(' ')}" fill="none" stroke="#5ccfa8" stroke-width="2"/>`;
+  gs.forEach(g=>{const ev=d.gens[g].evals;ev.forEach((e,i)=>{const x=X(g)+(ev.length>1?(i/(ev.length-1)-.5)*Math.min(40,(W-pl-pr)/(g1-g0+1)*.6):0);
+    out+=`<circle cx="${x}" cy="${Y(e.fitness)}" r="5" fill="#8fa39a" fill-opacity=".85" stroke="#131c19" stroke-width="2"/><circle class="hit" cx="${x}" cy="${Y(e.fitness)}" r="11" fill="transparent" data-h="${e.structure_hash}" data-g="${g}" data-f="${e.fitness.toFixed(2)}" data-o="${esc(e.doc?.origin||'')}" style="cursor:pointer"/>`;});});
+  svg.innerHTML=out;
+  svg.querySelectorAll('.hit').forEach(c=>{
+    c.onmouseenter=ev=>{const t=$('tip');t.style.display='block';t.innerHTML=`gen ${c.dataset.g} · ${c.dataset.h.slice(0,10)}<br>${c.dataset.o} · fitness <b>${c.dataset.f}</b>`;const r=svg.getBoundingClientRect(),p=svg.parentNode.getBoundingClientRect();t.style.left=(+c.getAttribute('cx')*r.width/W+r.left-p.left+12)+'px';t.style.top=(+c.getAttribute('cy')*r.height/H+r.top-p.top-10)+'px';};
+    c.onmouseleave=()=>$('tip').style.display='none';
+    c.onclick=()=>jump(c.dataset.h,c.dataset.g);});
+}
+function dag(nodes,edges,cached,calls){
+  const W=250,bw=108,bh=36,preds={};nodes.forEach(n=>preds[n.node_id]=[]);edges.forEach(e=>preds[e.to]&&preds[e.to].push(e.from));
+  const depth={};const dd=n=>depth[n]??=(1+Math.max(0,...(preds[n]||[]).map(dd)));nodes.forEach(n=>dd(n.node_id));
+  const layers={};nodes.forEach(n=>(layers[depth[n.node_id]]||=[]).push(n));const L=Math.max(1,...Object.keys(layers).map(Number)),H=L*54+6,pos={};
+  Object.entries(layers).forEach(([l,ns])=>ns.forEach((n,i)=>pos[n.node_id]={x:(i+1)*W/(ns.length+1)-bw/2,y:(l-1)*54+4}));
+  const e=edges.map(x=>{const a=pos[x.from],b=pos[x.to];return a&&b?`<path d="M${a.x+bw/2} ${a.y+bh}C${a.x+bw/2} ${a.y+bh+12} ${b.x+bw/2} ${b.y-12} ${b.x+bw/2} ${b.y}" stroke="#4a5d55" stroke-width="1.3" fill="none"/>`:'';}).join('');
+  const n=nodes.map(x=>{const p=pos[x.node_id],c=cached&&cached.has(x.node_id),k=calls&&calls[x.node_id];
+    return `<g><rect x="${p.x}" y="${p.y}" width="${bw}" height="${bh}" rx="4" fill="#0f1714" stroke="${c?'#8fb4ff':'#25332d'}" ${c?'stroke-dasharray="4 3" stroke-width="1.6"':''}/><rect x="${p.x}" y="${p.y}" width="4" height="${bh}" rx="2" fill="${COLORS[x.role]||'#8fa39a'}"/>
+    <text x="${p.x+9}" y="${p.y+14}" fill="#e2eae5" font-size="11" font-family="IBM Plex Sans">${esc(x.role).slice(0,15)}${c?' · reused':k!=null?` · ${k} calls`:''}</text><text x="${p.x+9}" y="${p.y+28}" fill="#8fa39a" font-size="9.5" font-family="IBM Plex Mono">${esc((x.tools||[]).join(',')).slice(0,19)}</text></g>`;}).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="Agent structure">${e}${n}</svg>`;
+}
+function card(e,d,isBest){
+  const s=e.doc||{},nodes=s.nodes||e.nodes||[],edges=s.edges||e.edges||[],key=e.structure_hash+e.gen;
+  const m=Object.entries(s.metrics||{}).filter(([k,v])=>typeof v==='number').map(([k,v])=>`${k} ${v.toFixed(2)}`).join(' · ');
+  const par=(s.parent_structure_hashes||[])[0];const origin=(s.origin||'').replace('mutation:','mutation · ');
+  return `<div class="card ${isBest?'best':''}" id="s-${e.structure_hash.slice(0,12)}-${e.gen}"><div class="row"><span class="fit">${e.fitness.toFixed(2)}</span><span>${isBest?'<span class="tag" style="color:var(--acc)">best of gen</span> ':''}${s.generation!=null&&s.generation<e.gen?`<span class="tag c">elite re-sample · first gen ${s.generation}</span> `:''}${e.n>1?`<span class="tag">mean ${e.mean.toFixed(2)} · n ${e.n}</span>`:''}</span></div>
+  <div class="bar"><i style="width:${e.fitness*100}%"></i></div>${dag(nodes,edges,d.cache[key],d.calls[key])}
+  <div class="row" style="margin-top:4px"><span>${esc(origin)}</span><span>${e.structure_hash.slice(0,8)}</span></div>
+  ${par?`<div class="metrics">parent <a href="#" data-p="${par}">${par.slice(0,8)}</a></div>`:''}${m?`<div class="metrics">${esc(m)}</div>`:''}</div>`;
+}
+function ghost(e){
+  const what=e.kind==='blocked'?`blocked: ${e.reason}`:e.kind==='near_dup'?`near-duplicate (cosine ${(e.score||0).toFixed(2)}): ${e.reason}`:`re-run of gen ${e.first_gen} (memory off)`;
+  return `<div class="card ghost"><div class="row"><span class="tag w">${e.kind==='repeat'?'wasted repeat':'skipped by memory'}</span><span>${(e.structure_hash||'').slice(0,8)}</span></div>
+  ${e.nodes?dag(e.nodes,e.edges||[]):''}<div class="metrics">${esc(what)}</div></div>`;
+}
+function render(d){
+  const gs=Object.keys(d.gens).map(Number).sort((a,b)=>b-a);
+  if(!gs.length){$('gens').innerHTML='<p class="empty">No generations in this scope yet.</p>';return;}
+  $('gens').innerHTML=gs.map(g=>{const x=d.gens[g],fits=x.evals.map(e=>e.fitness),top=fits.length?Math.max(...fits):null;
+    const mean=fits.length?fits.reduce((a,b)=>a+b,0)/fits.length:null;
+    return `<section class="gen"><h2>Generation ${g}<em>${x.evals.length} evaluated · best ${top==null?'–':top.toFixed(2)} · mean ${mean==null?'–':mean.toFixed(2)} · ${x.cache} cache hits · ${x.ghosts.length} skipped${x.done?'':' · in progress'}</em></h2>
+    <div class="grid">${x.evals.slice().sort((a,b)=>b.fitness-a.fitness).map((e,i)=>card(e,d,i===0)).join('')}${x.ghosts.map(ghost).join('')}</div></section>`;}).join('');
+  $('gens').querySelectorAll('a[data-p]').forEach(a=>a.onclick=ev=>{ev.preventDefault();jump(a.dataset.p);});
+}
+function jump(h,g){
+  const el=[...document.querySelectorAll(`[id^="s-${h.slice(0,12)}-"]`)].find(x=>g==null||x.id.endsWith('-'+g))||document.querySelector(`[id^="s-${h.slice(0,12)}-"]`);
+  if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.classList.add('flash');setTimeout(()=>el.classList.remove('flash'),1400);}
+}
+async function show(){
+  const scope=$('scope').value,vs=$('vs').value;history.replaceState(null,'',`?scope=${encodeURIComponent(scope)}${vs?'&vs='+encodeURIComponent(vs):''}`);
+  const [a,b]=await Promise.all([load(scope),vs?load(vs):null]);tiles(a,b);chart(a);render(a);window.onresize=()=>chart(a);
+}
+(async()=>{
+  const q=new URLSearchParams(location.search),scopes=await fetch('/api/scopes').then(r=>r.json());
+  const want=q.get('scope')||(scopes.includes('ga-on')?'ga-on':scopes[0]);if(want&&!scopes.includes(want))scopes.unshift(want);
+  $('scope').innerHTML=scopes.map(s=>`<option ${s===want?'selected':''}>${esc(s)}</option>`).join('');
+  $('vs').innerHTML='<option value="">—</option>'+scopes.map(s=>`<option ${s===q.get('vs')?'selected':''}>${esc(s)}</option>`).join('');
+  $('scope').onchange=$('vs').onchange=show;show();
+})();
+</script>
+</body>
+</html>
