@@ -1,6 +1,6 @@
 import pytest
 
-from lineage.hashing import agent_hash, structure_hash, trace_key
+from lineage.hashing import agent_hash, structure_hash, structure_vec, trace_key, trait_vec
 
 NS = "ns"
 A, B, C, D = "a", "b", "c", "d"
@@ -45,3 +45,15 @@ def test_rejects_duplicate_agent_and_multiple_roots():
 
 def test_tool_order_matters_in_trace():
     assert trace_key("k", ["s1", "s2"]) != trace_key("k", ["s2", "s1"])
+
+
+def test_trait_vectors_are_unit_and_order_free():
+    v = trait_vec("geometry", ["coarse_mesh", "depth_estimate"])
+    assert len(v) == 64 and abs(sum(x * x for x in v) - 1) < 1e-4
+    assert v == trait_vec("geometry", ["depth_estimate", "coarse_mesh", "coarse_mesh"])
+
+
+def test_structure_vec_ignores_brief_and_node_order():
+    a, b = {"role": "planner", "tools": ["segment"], "brief": "x"}, {"role": "refiner", "tools": ["mesh_refine"]}
+    assert structure_vec([a, b]) == structure_vec([b, {**a, "brief": "y"}])
+    assert structure_vec([a]) != structure_vec([b])

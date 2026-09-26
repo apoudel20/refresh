@@ -10,6 +10,7 @@ standalone folders; each one has its own README and runs on its own.
 | folder | what it is |
 |---|---|
 | [`lineage/`](lineage/README.md) | MongoDB Atlas memory layer for the search over agent structures: dedupes structures, caches nodes, resumes after a crash. |
+| `blender-agent-harness/` | From the `pranav` branch: the Blender agent (`blender_agent`), its MCP connector (`blender_mcp_connector`), the `agent_runner` entry point, an eval API and a Streamlit dashboard. Run from inside this folder; its packages import each other.
 | [`render-eval-skill/`](render-eval-skill/README.md) | Scores a render against the reference image: 8 evals, a VLM critic, run history and vector encodings for comparing agent structures. Installs the `render-eval` command and agent skill. |
 | [`imagegen-skill/`](imagegen-skill/README.md) | Image generation, editing and texture-atlas toolkit, plus the `blender-atlas-retexture` skill. |
 | [`uipack/`](uipack/README.md) | Next.js frontend: projects, reference capture, base-model requests, GLB viewer and pinch-sculpt edits. |

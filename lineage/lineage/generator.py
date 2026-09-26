@@ -2,7 +2,7 @@
 import random
 
 from . import llm
-from .hashing import MAX_NODES, agent_hash, normalize_genome, validate
+from .hashing import MAX_NODES, agent_hash, normalize_genome, trait_vec, validate
 
 ROLES = ["planner", "preprocessor", "geometry", "refiner", "texturer", "verifier"]
 
@@ -27,7 +27,8 @@ class Generator:
                               "delegates": [], "params": {"temperature": 0.3, "max_calls": 6}})
         g["agent_hash"] = agent_hash(g)
         self.db.agents.update_one({"agent_hash": g["agent_hash"]}, {"$setOnInsert": {
-            **g, "created_by": created_by, "parent_agent_hashes": list(parents)}}, upsert=True)
+            **g, "created_by": created_by, "parent_agent_hashes": list(parents)},
+            "$set": {"trait_vec": trait_vec(g["role"], g["tools"])}}, upsert=True)
         return g
 
     def _random_tools(self):
@@ -105,6 +106,7 @@ class Generator:
         props = self.llm_proposals(k // 2) if llm.enabled() else []
         elites = self.elites()
         while len(props) < k:
-            props.append(self.mutate(self.rng.choice(elites)) if elites and self.rng.random() < 0.7
-                         else self.random_structure())
+            # exploit: mostly mutate elites, biased to the best; explore: the odd random structure
+            props.append(self.mutate(elites[min(int(self.rng.expovariate(1.2)), len(elites) - 1)])
+                         if elites and self.rng.random() < 0.85 else self.random_structure())
         return props

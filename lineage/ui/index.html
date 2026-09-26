@@ -61,6 +61,7 @@ h2{font:600 12px var(--cond);text-transform:uppercase;letter-spacing:.08em;color
     <div class="c"><b id="cBest">–</b><small>best fitness</small></div>
     <div class="c"><b id="cEval">0</b><small>evaluated</small></div>
     <div class="c"><b id="cBlock">0</b><small>blocked repeats</small></div>
+    <div class="c"><b id="cNear">0</b><small>near-dups</small></div>
     <div class="c"><b id="cCache">0</b><small>cache hits</small></div>
     <div class="c"><b id="cCalls">0</b><small>tool calls</small></div>
   </div>
@@ -78,7 +79,7 @@ h2{font:600 12px var(--cond);text-transform:uppercase;letter-spacing:.08em;color
 <script>
 const $=id=>document.getElementById(id);
 let S, es;
-function reset(scope){S={scope,structs:{},order:[],cur:null,sel:null,nodes:{},best:0,evals:0,blocked:0,cache:0,calls:0,curve:[],memory:null};
+function reset(scope){S={scope,structs:{},order:[],cur:null,sel:null,nodes:{},best:0,evals:0,blocked:0,near:0,cache:0,calls:0,curve:[],memory:null};
   $('gensList').innerHTML='';$('graph').innerHTML='';$('chart').innerHTML='';$('meta').textContent='';}
 function apply(e){
   const s=e.structure_hash;
@@ -92,11 +93,12 @@ function apply(e){
     case 'node_done':if(S.nodes[s])S.nodes[s][e.node_id]={state:'done',trace_key:e.trace_key,calls:e.calls};break;
     case 'eval':S.evals++;S.structs[s].status='done';S.structs[s].fitness=e.fitness;S.best=Math.max(S.best,e.fitness);S.curve.push(S.best);break;
     case 'blocked':S.blocked++;S.order.push('b'+S.order.length);S.structs['b'+(S.order.length-1)]={gen:e.gen,status:'blocked',reason:e.reason,origin:e.origin,hash:s,nodes:e.nodes,edges:e.edges};break;
+    case 'near_dup':S.near++;S.order.push('b'+S.order.length);S.structs['b'+(S.order.length-1)]={gen:e.gen,status:'blocked',near:e.score,reason:`near-duplicate of ${e.reason} · ${e.score.toFixed(2)}`,origin:e.origin,hash:s,nodes:e.nodes,edges:e.edges};break;
     case 'repeat':if(S.structs[s])S.structs[s].repeat=`repeat of gen ${e.first_gen}`;break;
   }
 }
 function render(){
-  $('cBest').textContent=S.evals?S.best.toFixed(2):'–';$('cEval').textContent=S.evals;$('cBlock').textContent=S.blocked;$('cCache').textContent=S.cache;$('cCalls').textContent=S.calls;
+  $('cBest').textContent=S.evals?S.best.toFixed(2):'–';$('cEval').textContent=S.evals;$('cBlock').textContent=S.blocked;$('cNear').textContent=S.near;$('cCache').textContent=S.cache;$('cCalls').textContent=S.calls;
   const mb=$('memBadge');mb.textContent=S.memory==null?'—':(S.memory?'MEMORY ON':'MEMORY OFF');mb.style.color=mb.style.borderColor=S.memory?'var(--acc)':'var(--warn)';
   const byGen={};S.order.forEach(k=>{const x=S.structs[k];(byGen[x.gen]||=[]).push([k,x]);});
   $('gensList').classList.toggle('empty',!S.order.length);
@@ -125,7 +127,7 @@ function drawGallery(){
     const edges=x.edges.map(e=>{const a=pos[e.from],b=pos[e.to];return a&&b?`<line x1="${a.x+8}" y1="${a.y+8}" x2="${b.x+8}" y2="${b.y+8}" stroke="#4a5d55" stroke-width="1.2"/>`:'';}).join('');
     const nodes=x.nodes.map(n=>{const p=pos[n.node_id],s=(st[n.node_id]||{}).state;
       return `<rect x="${p.x}" y="${p.y}" width="${bw}" height="${bh}" rx="4" fill="${COLORS[n.role]||'#8fa39a'}" fill-opacity="${s==='queued'&&x.status==='running'?0.25:0.9}" ${s==='cached'?'stroke="#8fb4ff" stroke-width="2" stroke-dasharray="3 2"':''}${s==='running'?' class="pulse"':''}/>`;}).join('');
-    const label=x.status==='blocked'?`blocked · ${x.reason}`:f!=null?`fitness ${f.toFixed(2)}`:'running…';
+    const label=x.near!=null?`near-duplicate ${x.near.toFixed(2)}`:x.status==='blocked'?`blocked · ${x.reason}`:f!=null?`fitness ${f.toFixed(2)}`:'running…';
     return `<button class="card ${cls} ${k===S.sel?'sel':''}" data-k="${k}" title="${x.origin}"><svg viewBox="0 0 ${W} ${H-18}" width="100%" height="${H-18}">${edges}${nodes}</svg>
       <div class="cap"><span>${x.origin.replace('mutation:','mut:')}</span><b style="color:${f!=null?`hsl(${150*f},55%,62%)`:'var(--mute)'}">${label}</b></div>
       <div class="fbar"><i style="width:${(f??0)*100}%;background:hsl(${150*(f??0)},55%,52%)"></i></div></button>`;}).join('');
