@@ -40,6 +40,43 @@ class Runner:
                     return calls, out.get("note", "")
         return [{"tool_id": t, "args": {}} for t in allowed], "default plan: allowed tools in registry order"
 
+    def _run_tool_level(self, g, inputs, s_hash, nid, gen):
+        """Lineage plans the tool calls itself and the workbench executes them one by one."""
+        calls, note = self.plan_calls(g, inputs)
+        cur, trace, node_cost = inputs, [], 0.0
+        for c in calls:
+            t = self.registry[c["tool_id"]]
+            log(self.db, self.scope, "tool_called", gen=gen, structure_hash=s_hash, node_id=nid, tool_id=t["tool_id"])
+            res = self.wb.call(t["tool_id"], t["version"], c.get("args", {}),
+                               [{k: i[k] for k in ("ref", "hash", "chain") if k in i} for i in cur])
+            node_cost += res.get("cost_usd", 0.0)
+            trace.append({"tool_sig": tool_sig(t["tool_id"], t["version"], c.get("args", {}), [i["hash"] for i in cur]),
+                          "tool_id": t["tool_id"], "args": c.get("args", {}), "summary": res.get("summary", ""),
+                          "output_ref": res["output_ref"], "error": res.get("error")})
+            cur = [{"ref": res["output_ref"], "hash": res["output_hash"], "chain": res.get("chain", []),
+                    "summary": res.get("summary", "")}]
+        return trace, cur[0], node_cost, note
+
+    def _run_node_level(self, g, inputs, s_hash, nid, ik, gen):
+        """The workbench runs a whole agent for this node (Refresh: one BlenderAgent run).
+
+        run_node(genome, inputs, ctx) -> {output_ref, output_hash, summary, cost_usd, error, chain,
+        calls: [{tool_id, args, summary, error}], note}
+        """
+        def node_log(kind, **detail):
+            log(self.db, self.scope, kind, gen=gen, structure_hash=s_hash, node_id=nid, **detail)
+
+        ctx = {"scope": self.scope, "ns": self.ns, "structure_hash": s_hash, "node_id": nid, "gen": gen,
+               "input_key": ik, "log": node_log}
+        res = self.wb.run_node(g, [{k: i[k] for k in ("ref", "hash", "chain", "summary") if k in i} for i in inputs], ctx)
+        in_hashes = [i["hash"] for i in inputs]
+        trace = [{"tool_sig": tool_sig(c["tool_id"], c.get("version", "1"), c.get("args", {}), in_hashes),
+                  "tool_id": c["tool_id"], "args": c.get("args", {}), "summary": c.get("summary", ""),
+                  "output_ref": res["output_ref"], "error": c.get("error")} for c in res.get("calls", [])]
+        out = {"ref": res["output_ref"], "hash": res["output_hash"], "chain": res.get("chain", []),
+               "summary": res.get("summary", "")}
+        return trace, out, res.get("cost_usd", 0.0), res.get("note", "")
+
     def run(self, s_hash, nodes, edges, task_input, gen):
         """nodes: {node_id: genome}. Returns (sink artifacts, cost_usd)."""
         order, preds = topo(nodes, edges)
@@ -55,20 +92,10 @@ class Runner:
                 log(self.db, self.scope, "cache_hit", gen=gen, structure_hash=s_hash, node_id=nid,
                     trace_key=cached["trace_key"], saved_usd=cached["cost_usd"])
                 continue
-            calls, note = self.plan_calls(g, inputs)
-            cur, trace, node_cost = inputs, [], 0.0
-            for c in calls:
-                t = self.registry[c["tool_id"]]
-                log(self.db, self.scope, "tool_called", gen=gen, structure_hash=s_hash, node_id=nid, tool_id=t["tool_id"])
-                res = self.wb.call(t["tool_id"], t["version"], c.get("args", {}),
-                                   [{k: i[k] for k in ("ref", "hash", "chain") if k in i} for i in cur])
-                node_cost += res.get("cost_usd", 0.0)
-                trace.append({"tool_sig": tool_sig(t["tool_id"], t["version"], c.get("args", {}), [i["hash"] for i in cur]),
-                              "tool_id": t["tool_id"], "args": c.get("args", {}), "summary": res.get("summary", ""),
-                              "output_ref": res["output_ref"], "error": res.get("error")})
-                cur = [{"ref": res["output_ref"], "hash": res["output_hash"], "chain": res.get("chain", []),
-                        "summary": res.get("summary", "")}]
-            out = cur[0]
+            if hasattr(self.wb, "run_node"):
+                trace, out, node_cost, note = self._run_node_level(g, inputs, s_hash, nid, ik, gen)
+            else:
+                trace, out, node_cost, note = self._run_tool_level(g, inputs, s_hash, nid, gen)
             tk = trace_key(ik, [x["tool_sig"] for x in trace])
             self.db.modules.update_one({"scope": self.scope, "trace_key": tk}, {"$setOnInsert": {
                 "scope": self.scope, "trace_key": tk, "input_key": ik, "agent_hash": g["agent_hash"],

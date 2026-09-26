@@ -9,7 +9,7 @@ Request (multipart/form-data):
     depth           depth map PNG                 (optional)
     ply             PLY mesh file                 (optional)
     reference_image reference image for comparison (optional)
-    backend         "openai" | "openrouter" | "claude"  (default: openai)
+    backend         "render_eval" | "openai" | "openrouter" | "claude" | "codex"  (default: render_eval)
     model           model override                (optional)
 
 Response:
@@ -39,6 +39,8 @@ app = FastAPI(title="Render Evaluator")
 
 
 def _build_client(backend: str, model: str | None) -> EvaluatorClient:
+    if backend == "render_eval":
+        return EvaluatorClient.from_render_eval(fast=False)
     if backend == "claude":
         return EvaluatorClient.from_claude(**({"model": model} if model else {}))
     if backend == "openrouter":
@@ -54,7 +56,7 @@ async def eval_renders(
     depth: Annotated[UploadFile | None, File()] = None,
     ply: Annotated[UploadFile | None, File()] = None,
     reference_image: Annotated[UploadFile | None, File()] = None,
-    backend: Annotated[str, Form()] = "openai",
+    backend: Annotated[str, Form()] = "render_eval",
     model: Annotated[str | None, Form()] = None,
 ):
     with tempfile.TemporaryDirectory() as tmp:

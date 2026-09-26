@@ -1,0 +1,35 @@
+[project]
+name = "refresh-server"
+version = "0.1.0"
+description = "Refresh integrated backend: lineage search + BlenderAgent execution + render-eval scoring + uipack API"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "lineage",
+    "blender-agent-harness",
+    "render-eval",
+    "imagegen",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+    "python-dotenv>=1.0",
+    "pymongo>=4.7",
+    "mongomock",
+]
+
+[project.scripts]
+refresh-server = "refresh.cli:serve"
+refresh-search = "refresh.cli:headless"
+
+[tool.uv.sources]
+lineage = { path = "../lineage", editable = true }
+blender-agent-harness = { path = "../blender-agent-harness", editable = true }
+render-eval = { path = "../render-eval-skill", editable = true }
+imagegen = { path = "../imagegen-skill", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["refresh"]

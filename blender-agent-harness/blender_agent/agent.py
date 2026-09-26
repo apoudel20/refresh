@@ -22,12 +22,13 @@ from . import secrets as _secrets
 from .emit import Emitter, NullEmitter
 from .evaluator import EvaluatorClient, EvaluationResult, RenderPayload
 from .feedback import FeedbackAccessor, FeedbackCategory
+from . import imagegen_tools, solidity
 from .mcp_connector import BlenderMCPConnector, MCPConfig
-from .pointcloud import ImageToPointCloud, PointCloudConfig
+from .reference_guard import RULE as REFERENCE_RULE, ReferenceGuard
 from .texture_gen import TextureGenerator, TextureGenConfig
 from .tools import openai_tools, TOOL_DEFINITIONS
 
-LLMBackend = Literal["openai", "openrouter", "anthropic"]
+LLMBackend = Literal["openai", "openrouter", "anthropic", "claude_code"]  # claude_code: `claude -p`, subscription auth
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
@@ -66,6 +67,10 @@ class HarnessTrace:
     final_evaluation: EvaluationResult | None = None
     total_iterations: int = 0
     stop_reason: str = ""
+    final_text: str = ""        # the agent's closing message (claude_code backend), handed to the next agent
+    cost_usd: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
 
     # ── Derived views ──────────────────────────────────────────────
 
@@ -138,28 +143,33 @@ class AgentTraits:
         return "  ".join(parts)
 
     def active_tools(self) -> list[dict[str, Any]]:
-        """Return the OpenAI tool list filtered by allowed_tools."""
-        all_tools = openai_tools()
-        if not self.allowed_tools:
-            return all_tools
-        allowed = set(self.allowed_tools)
-        return [t for t in all_tools if t["function"]["name"] in allowed]
+        """Return the OpenAI tool list filtered by allowed_tools (plus the always-allowed tools)."""
+        return openai_tools(self.allowed_tools)
 
     def build_system_prompt(self) -> str:
         base = (
-            "You are an expert 3-D modelling assistant operating inside a Blender "
-            "automation pipeline.  Your job is to recreate a 3-D model that matches "
-            "a reference description or image as closely as possible.\n\n"
-            "Workflow:\n"
-            "1. Use `image_to_pointcloud` (if a reference image is given) to bootstrap geometry.\n"
-            "2. Import the PLY with `blender_import_file`.\n"
-            "3. Clean up topology with `blender_smooth_mesh` / `blender_apply_subdivision`.\n"
-            "4. Unwrap UVs with `blender_unwrap_uv`.\n"
-            "5. Generate textures with `generate_texture` (albedo first, then normal/roughness).\n"
-            "6. Assign with `blender_set_material`.\n"
-            "7. Render from multiple angles with `blender_render`.\n"
-            "8. Call `evaluate_render` and read the scores and feedback carefully.\n"
-            "9. Act on the highest-priority feedback and repeat from step 3.\n\n"
+            "You are an expert 3-D modelling agent working inside a live Blender scene. Your job is to "
+            "make the model match the reference image as closely as possible, as seen from the fixed "
+            "stage camera.\n\n"
+            "How the harness works:\n"
+            "- The camera 'StageCam' and the stage lights (collection 'RefreshStage') are owned by the "
+            "harness. Never move, delete or edit them; the score is always computed from that view.\n"
+            "- The scene may already contain work from earlier agents in your team: it is loaded for you, so "
+            "there are no model files to find or import. Inspect it first (`blender_get_scene_info`) and build "
+            "on it rather than starting over, unless it is clearly wrong.\n"
+            "- If the scene holds no model yet (only the stage camera and lights), you are the first agent: build "
+            "the object's geometry first, whatever your role, then do your role's part.\n"
+            "- `evaluate_render` renders the stage view, scores it against the reference (pixel, depth, "
+            "normals, silhouette, edges, colour), and checks the model from all around (solidity: a closed "
+            "surface with real depth, not a relief or a shell open at the back). It shows you the stage render "
+            "and a turntable strip (back faces red). Call it after each significant change and act on the "
+            "weakest parts it reports; the overall score is the front match times the solidity factor.\n"
+            "- `blender_render` shows other angles for your own inspection.\n"
+            "- Build geometry with `blender_execute_python` (primitives, bmesh, modifiers, curves, skin and "
+            "subdivision), shaping every side of the object, including the parts the photo can't show; "
+            "texture with the imagegen tools when the shape is right.\n"
+            f"- {REFERENCE_RULE}\n"
+            "- Only use the tools you were given. Stop when the model matches or you run out of useful moves.\n\n"
         )
 
         # Inject priority guidance from weights
@@ -203,10 +213,11 @@ class AgentTraits:
 class AgentConfig:
     model: str = "gpt-4o"
     llm_backend: LLMBackend = "openrouter"
-    max_tokens: int = 4096
+    max_tokens: int = 16000
+    effort: str = "high"                 # anthropic backend: output_config.effort
+    anthropic_fallbacks: bool = True     # anthropic backend: server-side refusal fallbacks
     mcp: MCPConfig = field(default_factory=MCPConfig)
     texture: TextureGenConfig = field(default_factory=TextureGenConfig)
-    pointcloud: PointCloudConfig = field(default_factory=PointCloudConfig)
     workspace: str = "/tmp/blender_agent"
 
 
@@ -244,8 +255,10 @@ class BlenderAgent:
         self.cfg = config or AgentConfig()
         _secrets.load()
         self._texture_gen = TextureGenerator(self.cfg.texture)
-        self._pointcloud  = ImageToPointCloud(self.cfg.pointcloud)
-        if self.cfg.llm_backend == "anthropic":
+        if self.cfg.llm_backend == "claude_code":  # the Claude Code CLI owns the model client
+            self._llm = None
+            self._anthropic = None
+        elif self.cfg.llm_backend == "anthropic":
             self._llm = None
             self._anthropic = self._build_anthropic_client(api_key)
         else:
@@ -261,6 +274,7 @@ class BlenderAgent:
         traits: AgentTraits | None = None,
         workspace: str | None = None,
         emitter: Emitter | None = None,
+        connector: BlenderMCPConnector | None = None,
     ) -> tuple[EvaluationResult | None, HarnessTrace]:
         traits  = traits or AgentTraits()
         ws      = Path(workspace or self.cfg.workspace)
@@ -270,14 +284,22 @@ class BlenderAgent:
 
         em.run_start(goal, traits.summary(), self.cfg.model, self.cfg.llm_backend)
 
-        self._preflight(self.cfg.mcp)
-
-        with BlenderMCPConnector(self.cfg.mcp) as blender:
-            self._blender = blender
-            if self.cfg.llm_backend == "anthropic":
+        blender = connector or BlenderMCPConnector(self.cfg.mcp)
+        if not blender.ping():
+            raise RuntimeError(
+                f"Blender MCP server not reachable at {blender.config.host}:{blender.config.port}. "
+                "In Blender: enable the MCP extension and start its server."
+            )
+        self._blender = blender
+        self._eval_count = 0
+        try:
+            if self.cfg.llm_backend == "claude_code":
+                self._loop_claude_code(goal, reference or {}, traits, ws, trace, em)
+            elif self.cfg.llm_backend == "anthropic":
                 self._loop_anthropic(goal, reference or {}, traits, ws, trace, em)
             else:
                 self._loop(goal, reference or {}, traits, ws, trace, em)
+        finally:
             self._blender = None
 
         em.stop(trace.stop_reason, trace.total_iterations,
@@ -287,11 +309,23 @@ class BlenderAgent:
             "score_progression":  trace.score_progression(),
             "errors":             [{"tool": e.tool, "error": e.error} for e in trace.errors()],
             "stop_reason":        trace.stop_reason,
+            "cost_usd":           round(trace.cost_usd, 4),
+            "tokens":             {"input": trace.input_tokens, "output": trace.output_tokens},
         })
 
         return trace.final_evaluation, trace
 
-    # ── Agentic loop ───────────────────────────────────────────────
+    # ── Agentic loops ──────────────────────────────────────────────
+
+    def _loop_anthropic(self, goal, reference, traits, ws, trace, em) -> None:
+        from . import anthropic_loop
+
+        anthropic_loop.run(self, goal, reference, traits, ws, trace, em)
+
+    def _loop_claude_code(self, goal, reference, traits, ws, trace, em) -> None:
+        from . import claude_code_loop
+
+        claude_code_loop.run(self, goal, reference, traits, ws, trace, em)
 
     def _loop(
         self,
@@ -390,7 +424,23 @@ class BlenderAgent:
 
     # ── Tool dispatch ──────────────────────────────────────────────
 
-    def _call_tool(
+    PREVIEW_AFTER = ("blender_execute_python", "blender_smooth_mesh", "blender_apply_subdivision",
+                     "blender_set_material", "retexture_uv")
+
+    def _call_tool(self, name, args, reference, ws, traits, trace, iteration, em) -> Any:
+        result = self._dispatch_tool(name, args, reference, ws, traits, trace, iteration, em)
+        if name in self.PREVIEW_AFTER and self._blender is not None:
+            # live progress for the dashboard: a quick stage-view render after every change (the agent doesn't see it)
+            self._preview_count = getattr(self, "_preview_count", 0) + 1
+            path = ws / "previews" / f"preview_{self._preview_count:03d}_{name}.png"
+            try:
+                self._blender.render_preview(str(path))
+                em.artifact("preview", str(path), {"tool": name})
+            except Exception:
+                pass
+        return result
+
+    def _dispatch_tool(
         self,
         name: str,
         args: dict[str, Any],
@@ -404,16 +454,11 @@ class BlenderAgent:
         b = self._blender
         assert b is not None
 
-        if name == "image_to_pointcloud":
-            ply_path = self._pointcloud.convert(args["image_path"], args["output_ply_path"])
-            em.artifact("ply", ply_path)
-            return ply_path
-
-        if name == "blender_import_file":
-            return b.import_file(args["path"], args.get("file_format"))
+        guard = ReferenceGuard(reference)
         if name == "blender_export_file":
             return b.export_file(args["path"], args.get("file_format"), args.get("object_names"))
         if name == "blender_execute_python":
+            guard.check_code(args["code"])
             return b.execute_python(args["code"])
         if name == "blender_get_scene_info":
             return b.get_scene_info()
@@ -428,19 +473,44 @@ class BlenderAgent:
         if name == "blender_get_vertex_positions":
             return b.get_vertex_positions(args["object_name"])
         if name == "blender_render":
-            return b.render(
+            paths = b.render(
                 args["output_path"],
                 args.get("camera_angles", traits.render_angles),
                 tuple(args["resolution"]) if "resolution" in args else traits.render_resolution,
-                args.get("engine", "CYCLES"),
+                args.get("engine", "EEVEE"),
             )
+            for p in paths:
+                em.artifact("render", p)
+            return {"paths": paths, "_images": paths[:4]}
         if name == "blender_get_depth_map":
             return b.get_depth_map(
                 args["output_path"],
                 tuple(args["resolution"]) if "resolution" in args else traits.render_resolution,
             )
         if name == "blender_set_material":
+            guard.check_path(args["texture_path"])
             return b.set_material(args["object_name"], args["texture_path"], args.get("mapping", "UV"))
+
+        if name == "generate_image":
+            out = imagegen_tools.generate_image(args["prompt"], args["output_path"], args.get("references"),
+                                                args.get("size"), self.cfg.texture.backend)
+            if any(guard.is_protected(r) for r in args.get("references") or []):
+                guard.mark_derived(out["path"])  # a picture made from the photo is still the photo
+            em.artifact("image", out["path"])
+            return out
+        if name == "edit_image":
+            out = imagegen_tools.edit_image(args["image_path"], args["instruction"], args["output_path"],
+                                            args.get("region"), self.cfg.texture.backend)
+            if guard.is_protected(args["image_path"]):
+                guard.mark_derived(out["path"])
+            em.artifact("image", out["path"])
+            return out
+        if name == "retexture_uv":
+            out = imagegen_tools.retexture_uv(b, args["object_name"], args["style_image_path"], ws,
+                                              args.get("materials"), args.get("instruction", ""),
+                                              self.cfg.texture.backend)
+            em.artifact("texture", out["atlas"])
+            return out
 
         if name == "generate_texture":
             return self._texture_gen.generate_from_prompt(
@@ -457,11 +527,24 @@ class BlenderAgent:
             )
 
         if name == "evaluate_render":
-            payload = RenderPayload(
-                render_images=args["render_image_paths"],
-                depth_map_path=args.get("depth_map_path"),
-                ply_path=args.get("ply_path"),
-            )
+            # The harness renders the locked stage view itself; agents can't choose what gets scored.
+            self._eval_count = getattr(self, "_eval_count", 0) + 1
+            eval_dir = ws / "evals"
+            stage_png = str(eval_dir / f"eval_{self._eval_count:02d}.png")
+            pasted = guard.scene_violations(b.scene_images())
+            if pasted:
+                se = ScoreEvent(iteration=iteration, overall=0.0, visual=0.0, topology=0.0, depth=0.0, vertices=0.0,
+                                feedback=[f"disqualified: the scene loads the reference photo ({', '.join(pasted)})"])
+                trace.score_events.append(se)
+                em.score(iteration=iteration, overall=0.0, visual=0.0, topology=0.0, depth=0.0, vertices=0.0,
+                         feedback=se.feedback)
+                return {"overall_score": 0.0, "disqualified": True, "images": pasted,
+                        "message": f"Score 0: these Blender images are the reference photo or made from it: "
+                                   f"{', '.join(pasted)}. Delete them and whatever you built from them. "
+                                   + REFERENCE_RULE}
+            b.render_stage(stage_png)
+            em.artifact("stage_render", stage_png)
+            payload = RenderPayload(render_images=[stage_png])
             obj = args.get("object_name")
             if obj:
                 try:
@@ -471,6 +554,11 @@ class BlenderAgent:
                     pass
 
             ev = self.evaluator.evaluate(payload, reference)
+            solid = solidity.measure(b, eval_dir / f"turntable_{self._eval_count:02d}")
+            front = ev.overall_score
+            ev.overall_score = front * solidity.fitness_factor(solid["solidity"])
+            ev.scores = {**ev.scores, "solidity": solid["solidity"]}
+            ev.feedback = solid["feedback"] + list(ev.feedback)
             trace.final_evaluation = ev
 
             se = ScoreEvent(
@@ -496,14 +584,25 @@ class BlenderAgent:
             # Return weighted breakdown so the model can see trait-adjusted priorities
             fa = FeedbackAccessor(ev)
             return {
-                "overall_score":    ev.overall_score,
+                "overall_score":    round(ev.overall_score, 4),
+                "front_match":      round(front, 4),
+                "solidity":         {k: solid[k] for k in ("solidity", "closure", "thickness")},
+                "step_scores":      {k: round(v, 3) for k, v in ev.scores.items()},
+                "subscores":        {"visual": round(ev.visual_fidelity, 3), "topology": round(ev.topology_quality, 3),
+                                     "depth": round(ev.depth_alignment, 3), "vertices": round(ev.vertex_accuracy, 3)},
+                "note":             args.get("note", ""),
+                "images_shown":     "1: stage render (what is scored against the photo); 2: turntable from 8 "
+                                    "sides starting at the stage camera, back faces red",
+                "_images":          [stage_png] + ([solid["sheet"]] if solid["sheet"] else []),
+                "stage_render":     stage_png,
+                "turntable":        solid["sheet"],
                 "weighted_scores": {
                     "topology": round(ev.topology_quality * traits.weight_topology, 3),
                     "texture":  round(ev.visual_fidelity  * traits.weight_texture,  3),
                     "shape":    round(ev.visual_fidelity  * traits.weight_shape,     3),
                     "depth":    round(ev.depth_alignment  * traits.weight_depth,     3),
                 },
-                "priority_feedback": [i.raw for i in fa.priority_order()[:5]],
+                "priority_feedback": list(dict.fromkeys(solid["feedback"][:2] + [i.raw for i in fa.priority_order()[:5]])),
                 "target_score":  traits.target_score,
                 "iterations_left": traits.max_iterations - iteration - 1,
             }
@@ -521,6 +620,13 @@ class BlenderAgent:
             parts.append(f"Reference mesh: {reference['reference_mesh_path']}")
         parts.append("Begin.")
         return "\n".join(parts)
+
+    def _build_anthropic_client(self, api_key_override: str = ""):
+        import anthropic
+
+        # No key argument -> the SDK resolves ANTHROPIC_API_KEY / auth token / `ant auth login` profile.
+        key = api_key_override or _secrets.get("ANTHROPIC_API_KEY")
+        return anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic()
 
     def _build_client(self, api_key_override: str = "") -> OpenAI:
         if self.cfg.llm_backend == "openrouter":

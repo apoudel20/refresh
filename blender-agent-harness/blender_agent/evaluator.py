@@ -31,7 +31,7 @@ class RenderPayload:
     """All artifacts from one Blender render cycle."""
     render_images: list[str]          # paths to rendered PNG/EXR images
     depth_map_path: str | None = None # path to depth EXR/PNG
-    ply_path: str | None = None       # path to exported point cloud / mesh
+    ply_path: str | None = None       # path to an exported mesh (remote eval API)
     vertex_positions: list[list[float]] = field(default_factory=list)   # [[x,y,z],…]
     topology_stats: dict[str, Any] = field(default_factory=dict)        # from mcp_connector
     metadata: dict[str, Any] = field(default_factory=dict)              # arbitrary extra info
@@ -47,6 +47,10 @@ class EvaluationResult:
     vertex_accuracy: float = 0.0     # vertex positions vs reference mesh
     feedback: list[str] = field(default_factory=list)   # human-readable notes
     raw: dict[str, Any] = field(default_factory=dict)   # full evaluator response
+    scores: dict[str, float] = field(default_factory=dict)  # render-eval step scores (pixel, depth, ...)
+    critique: str = ""                                   # render-eval critique text (full mode)
+    vector: dict[str, Any] | None = None                 # render-eval score vector + token matrix
+    render_path: str | None = None                       # the stage render that was scored
 
 
 # ------------------------------------------------------------------
@@ -143,7 +147,7 @@ class ClaudeEvaluatorBackend(EvaluatorBackend):
     Returns scores based on model critique.
     """
 
-    def __init__(self, api_key: str = "", model: str = "claude-sonnet-4-6"):
+    def __init__(self, api_key: str = "", model: str = "claude-opus-5"):
         _secrets.load()
         self.api_key = api_key or _secrets.get("ANTHROPIC_API_KEY")
         self.model = model
@@ -188,10 +192,13 @@ class ClaudeEvaluatorBackend(EvaluatorBackend):
 
         message = client.messages.create(
             model=self.model,
-            max_tokens=512,
+            max_tokens=16000,  # caps thinking + text; thinking is on by default on current models
             messages=[{"role": "user", "content": content}],
         )
-        body = json.loads(message.content[0].text)
+        if message.stop_reason == "refusal":
+            raise RuntimeError(f"Claude evaluator refused: {message.stop_details}")
+        text = next((b.text for b in message.content if b.type == "text"), "{}")
+        body = json.loads(text[text.find("{"): text.rfind("}") + 1] or "{}")
         return EvaluationResult(
             overall_score=body["overall_score"],
             visual_fidelity=body.get("visual_fidelity", 0.0),
@@ -350,6 +357,77 @@ class CodexEvaluatorBackend(EvaluatorBackend):
 
 
 # ------------------------------------------------------------------
+# render-eval backend (the harness default)
+# ------------------------------------------------------------------
+
+FAST_EVALS = ["pixel", "depth", "normals", "silhouette", "edges", "color"]
+
+
+class RenderEvalBackend(EvaluatorBackend):
+    """Scores a stage render against the reference with render-eval (render-eval-skill).
+
+    fast=True runs the six local steps only (no critic, no embedding call): seconds, no API cost.
+    fast=False runs all eight steps with the vision-LLM critic and records the run (history file,
+    latest-run images, vectors) into ``reports_dir``.
+    Legacy fields map as: visual_fidelity = mean(pixel, color, embedding, judge),
+    depth_alignment = mean(depth, normals), vertex_accuracy = silhouette, topology_quality = edges.
+    """
+
+    def __init__(self, fast: bool = True, reports_dir: str | None = None, label: str | None = None,
+                 meta: dict[str, Any] | None = None, size: int = 384):
+        self.fast = fast
+        self.reports_dir = reports_dir
+        self.label = label
+        self.meta = meta or {}
+        self.size = size
+
+    def evaluate(self, payload: RenderPayload, reference: dict[str, Any]) -> EvaluationResult:
+        from render_eval import EvalConfig, run_evals
+        from render_eval.report import explain
+
+        ref = reference.get("image_path")
+        if not ref or not payload.render_images:
+            raise ValueError("render-eval needs reference['image_path'] and at least one render image")
+        render = payload.render_images[0]
+        vector = None
+        critique = ""
+        if self.fast:
+            cfg = EvalConfig(size=self.size, normals_backend="depth")
+            report = run_evals(ref, render, FAST_EVALS, cfg)
+        else:
+            from render_eval.project import record_run
+
+            res = record_run(ref, render, self.reports_dir or str(Path(render).parent / "eval"),
+                             EvalConfig(), label=self.label, meta=self.meta)
+            report, critique = res["report"], res["critique"]
+            vector = res["vector"].to_dict()
+        scores = {k: float(r.score) for k, r in report.results.items() if r.ok}
+
+        def mean(keys: list[str]) -> float:
+            vals = [scores[k] for k in keys if k in scores]
+            return sum(vals) / len(vals) if vals else 0.0
+
+        ordered = sorted((r for r in report.results.values() if r.ok), key=lambda r: r.score)
+        feedback = [f"{r.name} {r.score:.2f}: {explain(r)}" for r in ordered[:4]]
+        judge = report.results.get("judge")
+        if judge is not None and judge.ok:
+            feedback = list(judge.details.get("top_fixes") or []) + feedback
+        return EvaluationResult(
+            overall_score=float(report.composite or 0.0),
+            visual_fidelity=mean(["pixel", "color", "embedding", "judge"]),
+            topology_quality=scores.get("edges", 0.0),
+            depth_alignment=mean(["depth", "normals"]),
+            vertex_accuracy=scores.get("silhouette", 0.0),
+            feedback=feedback,
+            raw={k: r.metrics for k, r in report.results.items() if r.ok},
+            scores=scores,
+            critique=critique,
+            vector=vector,
+            render_path=render,
+        )
+
+
+# ------------------------------------------------------------------
 # Client façade (used by BlenderAgent)
 # ------------------------------------------------------------------
 
@@ -371,7 +449,7 @@ class EvaluatorClient:
         return cls(HTTPEvaluatorBackend(base_url, api_key))
 
     @classmethod
-    def from_claude(cls, api_key: str = "", model: str = "claude-sonnet-4-6") -> "EvaluatorClient":
+    def from_claude(cls, api_key: str = "", model: str = "claude-opus-5") -> "EvaluatorClient":
         return cls(ClaudeEvaluatorBackend(api_key, model))
 
     @classmethod
@@ -385,3 +463,7 @@ class EvaluatorClient:
     @classmethod
     def from_codex(cls, model: str | None = None) -> "EvaluatorClient":
         return cls(CodexEvaluatorBackend(model))
+
+    @classmethod
+    def from_render_eval(cls, fast: bool = True, reports_dir: str | None = None, **kwargs: Any) -> "EvaluatorClient":
+        return cls(RenderEvalBackend(fast=fast, reports_dir=reports_dir, **kwargs))

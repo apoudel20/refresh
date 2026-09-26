@@ -12,15 +12,38 @@ from .hashing import VEC_DIMS
 
 load_dotenv()
 
-# Atlas Vector Search indexes over trait vectors: {collection: (index name, filter fields)}.
-VECTOR_INDEXES = {"agents": ("agent_vec", ["role"]), "structures": ("struct_vec", ["scope"])}
+# Atlas Vector Search indexes: {collection: [(index name, vector path, dims, filter fields)]}.
+# trait_vec: 64-dim role/tool fingerprint (near-duplicate gate).
+# outcome_vec: render-eval's 8x32 token matrix, flattened (what a structure's result looked like).
+OUTCOME_DIMS = 256
+VECTOR_INDEXES = {
+    "agents": [("agent_vec", "trait_vec", VEC_DIMS, ["role"])],
+    "structures": [("struct_vec", "trait_vec", VEC_DIMS, ["scope"]),
+                   ("outcome_vec", "outcome_vec", OUTCOME_DIMS, ["scope"])],
+}
 
 
 def get_db():
     uri = os.getenv("MONGODB_URI")
     if uri:
         from pymongo import MongoClient
-        return MongoClient(uri)[os.getenv("LINEAGE_DB", "lineage")]
+        kwargs = {"serverSelectionTimeoutMS": int(os.getenv("MONGODB_TIMEOUT_MS", "8000"))}
+        if uri.startswith("mongodb+srv://") or "tls=true" in uri.lower():
+            try:
+                import certifi  # standalone Pythons on macOS often lack the system CA bundle
+                kwargs["tlsCAFile"] = certifi.where()
+            except ImportError:
+                pass
+        client = MongoClient(uri, **kwargs)
+        try:
+            client.admin.command("ping")
+            return client[os.getenv("LINEAGE_DB", "lineage")]
+        except PyMongoError as e:
+            if os.getenv("LINEAGE_REQUIRE_ATLAS") == "1":
+                raise
+            print(f"WARNING: MongoDB at MONGODB_URI is unreachable ({type(e).__name__}). Using in-memory mongomock "
+                  "for now: nothing persists. Atlas fix: Network Access -> add this machine's IP address.",
+                  flush=True)
     import mongomock
     global _MOCK
     _MOCK = globals().get("_MOCK") or mongomock.MongoClient()
@@ -41,14 +64,16 @@ def ensure_vector_indexes(db, wait=180):
     if not isinstance(db, Database):
         return False
     try:
-        for coll, (name, filters) in VECTOR_INDEXES.items():
-            if not list(db[coll].list_search_indexes(name)):
-                db[coll].create_search_index(SearchIndexModel(name=name, type="vectorSearch", definition={"fields": [
-                    {"type": "vector", "path": "trait_vec", "numDimensions": VEC_DIMS, "similarity": "cosine"},
-                    *({"type": "filter", "path": f} for f in filters)]}))
+        for coll, specs in VECTOR_INDEXES.items():
+            for name, path, dims, filters in specs:
+                if not list(db[coll].list_search_indexes(name)):
+                    db[coll].create_search_index(SearchIndexModel(name=name, type="vectorSearch", definition={"fields": [
+                        {"type": "vector", "path": path, "numDimensions": dims, "similarity": "cosine"},
+                        *({"type": "filter", "path": f} for f in filters)]}))
         deadline = time.time() + wait
         while time.time() < deadline:
-            if all(i.get("queryable") for c, (n, _) in VECTOR_INDEXES.items() for i in db[c].list_search_indexes(n)):
+            if all(i.get("queryable") for c, specs in VECTOR_INDEXES.items() for (n, *_rest) in specs
+                   for i in db[c].list_search_indexes(n)):
                 return True
             time.sleep(3)
         print("vector indexes not queryable yet; near-duplicate gate off for this run")
@@ -72,3 +97,36 @@ def record_fitness(db, scope, s_hash, fitness):
     new = {"mean": mean, "n": n, "m2": m2, "var": m2 / (n - 1) if n > 1 else 0.0}
     db.structures.update_one({"scope": scope, "structure_hash": s_hash}, {"$set": {"fitness": new}})
     return new
+
+
+def similar_outcomes(db, scope, vec, k=3, exclude=None):
+    """Structures in this scope whose render-eval outcome vectors are closest to ``vec``.
+
+    Atlas: $vectorSearch on the ``outcome_vec`` index. mongomock / no index: exact cosine in Python.
+    Returns [{structure_hash, fitness, nodes, critique_fixes, similarity}] (similarity = cosine).
+    """
+    proj = {"_id": 0, "structure_hash": 1, "fitness": 1, "nodes": 1, "critique_fixes": 1, "generation": 1}
+    if isinstance(db, Database):
+        try:
+            out = []
+            for d in db.structures.aggregate([
+                    {"$vectorSearch": {"index": "outcome_vec", "path": "outcome_vec", "queryVector": list(vec),
+                                       "numCandidates": 60, "limit": k + 1, "filter": {"scope": scope}}},
+                    {"$project": {**proj, "score": {"$meta": "vectorSearchScore"}}}]):
+                if d["structure_hash"] != exclude:
+                    d["similarity"] = 2 * d.pop("score") - 1  # Atlas reports cosine as (1 + cos) / 2
+                    out.append(d)
+            return out[:k]
+        except PyMongoError:
+            pass
+    q = [float(x) for x in vec]
+    qn = sum(x * x for x in q) ** 0.5 or 1.0
+    scored = []
+    for d in db.structures.find({"scope": scope, "outcome_vec": {"$exists": True}}, {**proj, "outcome_vec": 1}):
+        if d.get("structure_hash") == exclude:
+            continue
+        v = d.pop("outcome_vec") or []
+        vn = sum(x * x for x in v) ** 0.5 or 1.0
+        d["similarity"] = sum(a * b for a, b in zip(q, v)) / (qn * vn)
+        scored.append(d)
+    return sorted(scored, key=lambda d: -d["similarity"])[:k]

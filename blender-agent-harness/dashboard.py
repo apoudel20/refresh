@@ -11,7 +11,6 @@ workspace directory containing renders, textures, and PLY files.
 from __future__ import annotations
 
 import json
-import struct
 import time
 from pathlib import Path
 from typing import Any
@@ -70,8 +69,7 @@ events = load_events(log)
 # ── Derive pipeline stage status ──────────────────────────────────────────
 
 STAGES = [
-    ("pointcloud",  "Depth → PLY",     "image_to_pointcloud"),
-    ("import",      "Blender import",  "blender_import_file"),
+    ("model",       "Modelling",       "blender_execute_python"),
     ("texture",     "Texture gen",     "generate_texture"),
     ("render",      "Render",          "blender_render"),
     ("evaluate",    "Evaluate",        "evaluate_render"),
@@ -194,80 +192,16 @@ with left:
             for f in feedback:
                 st.markdown(f"- {f}")
 
-# ── Point cloud viewer ────────────────────────────────────────────────────
+# ── Turntable (solidity check) ────────────────────────────────────────────
 
 with right:
-    st.subheader("Point cloud (intermediate PLY)")
-
-    ply_files = sorted(ws.glob("**/*.ply")) if ws.exists() else []
-
-    def read_ply(path: Path, max_pts: int = 40_000) -> tuple[np.ndarray, np.ndarray] | None:
-        """Parse a binary little-endian PLY with x/y/z/red/green/blue."""
-        try:
-            raw = path.read_bytes()
-            text = raw[:4096].decode("latin-1")
-            if "end_header" not in text:
-                return None
-            header_end = raw.index(b"end_header\n") + len(b"end_header\n")
-            header = text[: text.index("end_header")]
-
-            n_vertices = 0
-            for line in header.splitlines():
-                if line.startswith("element vertex"):
-                    n_vertices = int(line.split()[-1])
-
-            if n_vertices == 0:
-                return None
-
-            body = raw[header_end:]
-            stride = 4 * 3 + 3   # 3 floats + 3 bytes
-            step   = max(1, n_vertices // max_pts)
-            idxs   = range(0, n_vertices, step)
-
-            pts  = np.empty((len(idxs), 3), dtype=np.float32)
-            cols = np.empty((len(idxs), 3), dtype=np.uint8)
-            for out_i, vi in enumerate(idxs):
-                off     = vi * stride
-                x, y, z = struct.unpack_from("<fff", body, off)
-                r, g, b = struct.unpack_from("BBB",  body, off + 12)
-                pts[out_i]  = (x, y, z)
-                cols[out_i] = (r, g, b)
-
-            return pts, cols
-        except Exception:
-            return None
-
-    if ply_files:
-        selected_ply = st.selectbox(
-            "PLY file",
-            ply_files,
-            format_func=lambda p: p.name,
-            index=len(ply_files) - 1,
-        )
-        parsed = read_ply(selected_ply)
-        if parsed:
-            pts, cols = parsed
-            hex_colors = [f"rgb({r},{g},{b})" for r, g, b in cols]
-            fig3d = go.Figure(go.Scatter3d(
-                x=pts[:, 0], y=pts[:, 1], z=pts[:, 2],
-                mode="markers",
-                marker=dict(size=1.5, color=hex_colors, opacity=0.8),
-            ))
-            fig3d.update_layout(
-                scene=dict(
-                    xaxis=dict(showbackground=False),
-                    yaxis=dict(showbackground=False),
-                    zaxis=dict(showbackground=False),
-                ),
-                margin=dict(l=0, r=0, t=0, b=0),
-                height=320,
-            )
-            st.plotly_chart(fig3d, use_container_width=True)
-            st.caption(f"{len(pts):,} points shown · {selected_ply.stat().st_size // 1024} KB")
-        else:
-            st.warning("Could not parse PLY (expected binary little-endian x/y/z/r/g/b).")
+    st.subheader("Turntable (back faces red)")
+    sheets = sorted(ws.glob("**/turntable.png"), key=lambda p: p.stat().st_mtime) if ws.exists() else []
+    if sheets:
+        st.image(str(sheets[-1]), use_container_width=True)
+        st.caption("Model seen from 8 sides, starting at the stage camera. Red = the inside of an open surface.")
     else:
-        st.info(f"No .ply files found in `{workspace}`.")
+        st.info(f"No turntable yet in `{workspace}` (evaluate_render makes one).")
 
 st.divider()
 

@@ -435,7 +435,53 @@ class OpenRouterBackend:
 # Selection
 # --------------------------------------------------------------------------- #
 
-BACKENDS = {"codex": CodexBackend, "openrouter": OpenRouterBackend}
+class OpenAIBackend:
+    """DALL-E 3 via the OpenAI API. Needs OPENAI_API_KEY. (Ported from the blender-agent integration.)"""
+
+    name = "openai"
+    aspect_ratios = ["1:1", "16:9", "9:16"]
+
+    def __init__(self, model: str | None = None, *, api_key: str | None = None, timeout: float = 120.0):
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        if not self.api_key:
+            raise ImageGenError("OPENAI_API_KEY is not set.")
+        self.model = model or os.getenv("IMAGEGEN_OPENAI_MODEL") or "dall-e-3"
+        self._timeout = timeout
+
+    @property
+    def _client(self):
+        import openai
+        return openai.OpenAI(api_key=self.api_key, timeout=self._timeout)
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        references: Sequence[ImageLike] = (),
+        aspect_ratio: str | None = None,
+        n: int = 1,
+        **options: Any,
+    ) -> GenerationResult:
+        size_map = {"16:9": "1792x1024", "9:16": "1024x1792"}
+        size = size_map.get(aspect_ratio or "1:1", "1024x1024")
+        resp = self._client.images.generate(model=self.model, prompt=prompt, n=1, size=size)
+        img_bytes = httpx.get(resp.data[0].url, timeout=60).content
+        img = load_image(img_bytes)
+        return GenerationResult(images=[img], backend=self.name, model=self.model)
+
+    def judge(self, prompt: str, images: Sequence[ImageLike], schema: dict[str, Any]) -> dict[str, Any]:
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        content += [{"type": "image_url", "image_url": {"url": image_to_url(_as_pil(im))}} for im in images]
+        resp = self._client.chat.completions.create(
+            model=os.getenv("IMAGEGEN_OPENAI_JUDGE", "gpt-4o"),
+            messages=[{"role": "user", "content": content}],
+            response_format={"type": "json_schema", "json_schema": {"name": "review", "strict": True, "schema": schema}},
+            max_tokens=512,
+        )
+        return _parse_json(resp.choices[0].message.content)
+
+
+BACKENDS = {"codex": CodexBackend, "openrouter": OpenRouterBackend, "openai": OpenAIBackend}
 
 
 def get_backend(name: str | None = None, model: str | None = None, **kwargs: Any) -> Backend:

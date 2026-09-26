@@ -40,22 +40,38 @@ def near_dup(db, scope, s_hash, vec):
     return None
 
 
-def search(scope, memory, generations, k, workbench, task_id, task_input, seed=0, model=None, db=None):
+# Structure-level fields a rich evaluator (Refresh: render-eval) may return, stored on the structure doc.
+EVAL_EXTRAS = ("critique", "critique_fixes", "scores", "score_vec", "outcome_vec", "eval_dir", "render", "glb",
+               "overview", "blend", "front_match", "solidity", "disqualified", "turntable")
+
+
+def search(scope, memory, generations, k, workbench, task_id, task_input, seed=0, model=None, db=None,
+           stop_event=None):
     db = db if db is not None else get_db()
     ensure_indexes(db)
     vec_gate = memory and ensure_vector_indexes(db)
     registry = workbench.tools()
-    task_hash = content_hash(pathlib.Path(task_input).read_bytes() if pathlib.Path(task_input).is_file() else task_input)
+    if hasattr(workbench, "task_artifact"):  # the workbench knows what the task input really is
+        task_art = workbench.task_artifact(task_id, task_input)
+        task_hash = task_art["hash"]
+    else:
+        task_hash = content_hash(pathlib.Path(task_input).read_bytes() if pathlib.Path(task_input).is_file() else task_input)
+        task_art = {"ref": f"task:{task_hash[:12]}", "hash": task_hash, "chain": [], "summary": f"task input {task_id}"}
     ns = namespace(task_id, task_hash, workbench.eval_version, H(registry))
-    task_art = {"ref": f"task:{task_hash[:12]}", "hash": task_hash, "chain": [], "summary": f"task input {task_id}"}
     gen0 = 1 + max([d.get("generation", -1) for d in db.structures.find({"scope": scope}, {"generation": 1})], default=-1)
-    gen_ = Generator(db, scope, registry, memory, seed=seed + gen0, model=model)
+    gen_ = Generator(db, scope, registry, memory, seed=seed + gen0, model=model,
+                     task_brief=getattr(workbench, "task_brief", ""))
     runner = Runner(db, workbench, scope, ns, registry, use_cache=memory)
     log(db, scope, "resume" if gen0 else "search_started", memory=memory, gen=gen0, vector_gate=vec_gate)
     for gen in range(gen0, gen0 + generations):
+        if stop_event is not None and stop_event.is_set():
+            log(db, scope, "stopped", gen=gen)
+            break
         elite_hashes = {e["structure_hash"] for e in gen_.elites()} if memory else set()
         this_gen = []
         for cand in gen_.propose(k):
+            if stop_event is not None and stop_event.is_set():
+                break
             nodes = cand["nodes"]
             try:
                 s_hash = structure_hash(ns, {n: g["agent_hash"] for n, g in nodes.items()}, cand["edges"])
@@ -85,17 +101,29 @@ def search(scope, memory, generations, k, workbench, task_id, task_input, seed=0
                 "created": time.time()}}, upsert=True)
             log(db, scope, "structure_started", gen=gen, structure_hash=s_hash, origin=cand["origin"],
                 nodes=node_docs, edges=cand["edges"])
-            sinks, cost = runner.run(s_hash, nodes, cand["edges"], task_art, gen)
-            ev = workbench.evaluate(task_id, s_hash, sinks)
+            try:
+                sinks, cost = runner.run(s_hash, nodes, cand["edges"], task_art, gen)
+                ev = workbench.evaluate(task_id, s_hash, sinks)
+            except ConnectionError as e:  # Blender (or another hard dependency) is gone: stop cleanly
+                log(db, scope, "search_failed", gen=gen, structure_hash=s_hash, reason=str(e))
+                return db
+            except Exception as e:  # one broken structure must not end a long search
+                log(db, scope, "structure_failed", gen=gen, structure_hash=s_hash, reason=f"{type(e).__name__}: {e}")
+                continue
             fit = record_fitness(db, scope, s_hash, ev["fitness"])
+            extras = {x: ev[x] for x in EVAL_EXTRAS if ev.get(x) is not None}
             db.structures.update_one({"scope": scope, "structure_hash": s_hash},
                                      {"$set": {"metrics": ev.get("metrics"), "per_node": ev.get("per_node"), "cost_usd": cost,
-                                              "trait_vec": structure_vec(node_docs)}})
-            log(db, scope, "eval", gen=gen, structure_hash=s_hash, fitness=ev["fitness"], mean=fit["mean"], n=fit["n"], cost_usd=cost)
+                                              "trait_vec": structure_vec(node_docs), **extras}})
+            log(db, scope, "eval", gen=gen, structure_hash=s_hash, fitness=ev["fitness"], mean=fit["mean"], n=fit["n"],
+                cost_usd=cost, scores=ev.get("scores"), glb=ev.get("glb"), render=ev.get("render"))
             this_gen.append({**cand, "structure_hash": s_hash, "fitness": ev["fitness"]})
         gen_.last_gen = this_gen or gen_.last_gen
         best = db.structures.find_one({"scope": scope, "fitness.n": {"$gte": 1}}, sort=[("fitness.mean", -1)])
         log(db, scope, "generation_done", gen=gen, best=best["fitness"]["mean"] if best else None)
+    best = db.structures.find_one({"scope": scope, "fitness.n": {"$gte": 1}}, sort=[("fitness.mean", -1)])
+    log(db, scope, "search_done", best=best["fitness"]["mean"] if best else None,
+        best_structure=best["structure_hash"] if best else None, glb=(best or {}).get("glb"))
     return db
 
 

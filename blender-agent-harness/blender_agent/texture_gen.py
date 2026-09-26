@@ -15,7 +15,7 @@ from imagegen.backends import Backend, get_backend
 
 @dataclass
 class TextureGenConfig:
-    backend: str | None = None          # "codex" | "openrouter" | None → auto-detect
+    backend: str | None = None          # "codex" | "openrouter" | "openai" | None → auto-detect (IMAGEGEN_BACKEND)
     model: str | None = None            # override default model for the backend
     default_size: tuple[int, int] = (1024, 1024)
 

@@ -25,8 +25,7 @@ from blender_agent.agent import (
 )
 from blender_agent.emit import Emitter, MongoSink
 from blender_agent.evaluator import EvaluationResult, EvaluatorClient
-from blender_agent.mcp_connector import MCPConfig
-from blender_agent.pointcloud import PointCloudConfig
+from blender_mcp_connector import MCPConfig
 from blender_agent.texture_gen import TextureGenConfig
 
 
@@ -44,7 +43,7 @@ class ModelConfig:
     max_tokens: int = 4096
 
     # ── Evaluator ──────────────────────────────────────────────────
-    evaluator_backend: Literal["openai", "openrouter", "claude", "codex", "http"] = "claude"
+    evaluator_backend: Literal["render_eval", "openai", "openrouter", "claude", "codex", "http"] = "render_eval"
     evaluator_model: str = "claude-sonnet-4-6"
     evaluator_api_key: str = ""
     evaluator_url: str = ""     # required only for evaluator_backend="http"
@@ -52,10 +51,10 @@ class ModelConfig:
     # ── Blender MCP socket ─────────────────────────────────────────
     mcp_host: str = "localhost"
     mcp_port: int = 9876
-    mcp_timeout: float = 180.0
+    mcp_timeout: float = 600.0
 
     # ── Texture generation ─────────────────────────────────────────
-    texture_backend: str = "openai"   # "openai" | "openrouter" | "codex"
+    texture_backend: str | None = None   # None = imagegen auto (codex, then openrouter) | "openai" | "openrouter" | "codex"
 
     # ── Workspace ──────────────────────────────────────────────────
     workspace: str = "/tmp/blender_agent"
@@ -63,6 +62,8 @@ class ModelConfig:
 
 def _build_evaluator(cfg: ModelConfig) -> EvaluatorClient:
     b = cfg.evaluator_backend
+    if b == "render_eval":
+        return EvaluatorClient.from_render_eval(fast=True)
     if b == "openai":
         return EvaluatorClient.from_openai(cfg.evaluator_api_key, cfg.evaluator_model)
     if b == "openrouter":
@@ -148,7 +149,6 @@ def run(
             timeout=model_config.mcp_timeout,
         ),
         texture=TextureGenConfig(backend=model_config.texture_backend),
-        pointcloud=PointCloudConfig(),
         workspace=ws,
     )
 

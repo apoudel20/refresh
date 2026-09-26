@@ -1,13 +1,12 @@
-"""Quick test run — reconstruct Suzanne from reference images, no pointcloud step."""
+"""Quick test run — reconstruct Suzanne from reference images."""
 import os
 import sys
-sys.path.insert(0, "/Users/pranavagrawal/Documents/refresh")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from blender_agent import BlenderAgent, AgentTraits, Emitter, EvaluatorClient
 from blender_agent.agent import AgentConfig
 from blender_agent.emit import MongoSink
 from blender_agent.mcp_connector import MCPConfig
-from blender_agent.pointcloud import PointCloudConfig
 from blender_agent.texture_gen import TextureGenConfig
 
 evaluator = EvaluatorClient.from_openai(model="gpt-4o-mini")
@@ -17,19 +16,8 @@ cfg = AgentConfig(
     llm_backend="openai",
     max_tokens=1024,
     mcp=MCPConfig(host="localhost", port=9876),
-    workspace="/Users/pranavagrawal/Documents/refresh/workspace/suzanne_test",
-    texture=TextureGenConfig(backend="openai"),
-    pointcloud=PointCloudConfig(
-        backend="multi_view",
-        multi_view_image_paths=[
-            "/tmp/suzanne_refs/front.png",
-            "/tmp/suzanne_refs/side_right.png",
-            "/tmp/suzanne_refs/back_left.png",
-            "/tmp/suzanne_refs/side_left.png",
-        ],
-        multi_view_angles_deg=[0.0, 90.0, 135.0, -90.0],
-        multi_view_resolution=128,
-    ),
+    workspace=os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace", "suzanne_test") + "",
+    texture=TextureGenConfig(backend=None),
 )
 
 traits = AgentTraits(
@@ -37,8 +25,6 @@ traits = AgentTraits(
     target_score=0.75,
     plateau_window=4,
     allowed_tools=[
-        "image_to_pointcloud",
-        "blender_import_file",
         "blender_execute_python",
         "blender_get_scene_info",
         "blender_render",
@@ -56,11 +42,8 @@ traits = AgentTraits(
     persona=(
         "You have front, side-left, side-right and back-left reference images of Suzanne the monkey head. "
         "Workflow:\n"
-        "1. Run image_to_pointcloud with "
-        "image_path='/tmp/suzanne_refs/front.png' and "
-        "output_ply_path='/Users/pranavagrawal/Documents/refresh/workspace/suzanne_test/suzanne.ply' "
-        "to bootstrap geometry from the reference projections.\n"
-        "2. Import the PLY into Blender with blender_import_file.\n"
+        "1. Look at the references and plan the head's main masses (skull, brow, ears, muzzle).\n"
+        "2. Block them out with primitives via blender_execute_python and shape them (bmesh, modifiers).\n"
         "3. Check the scene (blender_get_scene_info). Ensure at least one sun lamp exists; "
         "if not, add one via blender_execute_python.\n"
         "4. Clean up the mesh: blender_smooth_mesh then blender_apply_subdivision.\n"
@@ -75,7 +58,7 @@ traits = AgentTraits(
     render_resolution=(512, 512),
 )
 
-sinks = ["stdout", "/Users/pranavagrawal/Documents/refresh/workspace/suzanne_test/agent.log"]
+sinks = ["stdout", os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace", "suzanne_test") + "/agent.log"]
 mongo_uri = os.environ.get("MONGO_URI")
 if mongo_uri:
     sinks.append(MongoSink(mongo_uri))

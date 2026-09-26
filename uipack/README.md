@@ -29,6 +29,12 @@ NEXT_PUBLIC_REFRESH_API_URL=http://localhost:8000
 
 Restart Next.js after changing environment variables. Leave the value empty to run the UI and demo without a backend. Do not put secrets in a `NEXT_PUBLIC_*` variable: it is exposed to the browser.
 
+## Backend in this repo
+
+`../refresh-server` implements this contract: it runs a lineage search of Blender agent teams per
+reconstruction, streams progress and every better GLB over SSE, and serves the search data the
+**Agent teams** panel (`app/components/SearchPanel.tsx`) shows. A single reference image is enough.
+
 ## Integration guide
 
 This README contains the full setup and backend contract, including request/response formats, SSE progress events, CORS, model hosting, authentication notes, and the code files to change.

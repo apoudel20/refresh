@@ -18,6 +18,8 @@ from render_eval.pair import ImageInput, ImagePair, make_pair
 # Numbered as in the proposal: 1 pixel, 2 depth, 3 normals, 4 silhouette, 5 edges, 6 embedding, 7 color, 8 judge.
 EVALS = {m.NAME: m for m in (pixel, depth, normals, silhouette, edges, embedding, color, judge)}
 REMOTE = {"embedding", "judge"}  # network-bound; run in threads alongside the local models
+# The six local steps: seconds per call, no API cost (the agent's inner-loop check).
+FAST_EVALS = ["pixel", "depth", "normals", "silhouette", "edges", "color"]
 
 # Starting weights for the composite. Uncalibrated: tune them against human ratings.
 DEFAULT_WEIGHTS: dict[str, float] = {

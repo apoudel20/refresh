@@ -92,7 +92,7 @@ class Emitter:
 
     def tool_call(self, iteration: int, tool: str, args: dict[str, Any]) -> None:
         # Truncate large args (e.g. bpy code blobs) for readability
-        safe_args = {k: (v[:200] + "…") if isinstance(v, str) and len(v) > 200 else v
+        safe_args = {k: (v[:4000] + "…") if isinstance(v, str) and len(v) > 4000 else v
                      for k, v in args.items()}
         self.emit("tool_call", iteration=iteration, tool=tool, args=safe_args)
 
@@ -215,6 +215,44 @@ class MongoSink:
                     "ended_at":    doc.get("ts"),
                 }},
             )
+
+    def flush(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+# ── Collection sink (shared database) ──────────────────────────────────────
+
+class CollectionSink:
+    """
+    Duck-type TextIO sink that inserts each event into an existing pymongo (or mongomock)
+    collection, stamped with fixed tags such as {scope, structure_hash, node_id, run_id}.
+    Used by the integrated harness so agent tool calls land next to lineage's events.
+    """
+
+    def __init__(self, collection: Any, on_event: Any = None, **tags: Any):
+        self._coll = collection
+        self._tags = tags
+        self._on_event = on_event
+
+    def write(self, text: str) -> None:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                doc = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            doc.update(self._tags)
+            self._coll.insert_one(dict(doc))
+            if self._on_event is not None:
+                try:
+                    self._on_event(doc)
+                except Exception:
+                    pass
 
     def flush(self) -> None:
         pass
