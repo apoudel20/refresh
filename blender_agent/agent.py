@@ -25,9 +25,9 @@ from .feedback import FeedbackAccessor, FeedbackCategory
 from .mcp_connector import BlenderMCPConnector, MCPConfig
 from .pointcloud import ImageToPointCloud, PointCloudConfig
 from .texture_gen import TextureGenerator, TextureGenConfig
-from .tools import openai_tools
+from .tools import openai_tools, TOOL_DEFINITIONS
 
-LLMBackend = Literal["openai", "openrouter"]
+LLMBackend = Literal["openai", "openrouter", "anthropic"]
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
@@ -243,9 +243,14 @@ class BlenderAgent:
         self.evaluator = evaluator
         self.cfg = config or AgentConfig()
         _secrets.load()
-        self._llm = self._build_client(api_key)
         self._texture_gen = TextureGenerator(self.cfg.texture)
         self._pointcloud  = ImageToPointCloud(self.cfg.pointcloud)
+        if self.cfg.llm_backend == "anthropic":
+            self._llm = None
+            self._anthropic = self._build_anthropic_client(api_key)
+        else:
+            self._llm = self._build_client(api_key)
+            self._anthropic = None
 
     # ── Public API ─────────────────────────────────────────────────
 
@@ -269,7 +274,10 @@ class BlenderAgent:
 
         with BlenderMCPConnector(self.cfg.mcp) as blender:
             self._blender = blender
-            self._loop(goal, reference or {}, traits, ws, trace, em)
+            if self.cfg.llm_backend == "anthropic":
+                self._loop_anthropic(goal, reference or {}, traits, ws, trace, em)
+            else:
+                self._loop(goal, reference or {}, traits, ws, trace, em)
             self._blender = None
 
         em.stop(trace.stop_reason, trace.total_iterations,

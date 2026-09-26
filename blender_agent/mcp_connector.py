@@ -4,7 +4,7 @@ Connector to the mcp-for-blender addon socket server.
 Protocol (per addon source):
   Send:    {"type": "<command>", "params": {...}}  — raw JSON, no framing
   Receive: {"status": "success", "result": ...}
-        or {"status": "error",   "message": ...}can y
+        or {"status": "error",   "message": ...}can y   
 
 Native commands: get_scene_info, get_object_info, execute_code
 Everything else is implemented via execute_code + bpy Python.
@@ -183,26 +183,47 @@ else:
         resolution: tuple[int, int] = (512, 512),
         engine: str = "CYCLES",
     ) -> list[str]:
-        import math as _math
-        angles = camera_angles or [(0.0, 0.0, 0.0)]
+        # camera_angles is [[azimuth, elevation, roll], ...] in degrees.
+        # azimuth orbits around the object (0=front, 90=right, 180=back, 270=left).
+        # elevation tilts up from horizontal (20 gives a slight top-down view).
+        angles = camera_angles or [(0.0, 20.0, 0.0)]
         paths: list[str] = []
-        for i, (rx, ry, rz) in enumerate(angles):
-            out = f"{output_path}_angle{i}.png"
+        for i, (azimuth, elevation, roll) in enumerate(angles):
+            out = f"{output_path}/render_angle{i}.png"
             code = f"""
-import bpy, math, os
+import bpy, math, mathutils, os
+os.makedirs(os.path.dirname({out!r}), exist_ok=True)
 scene = bpy.context.scene
 scene.render.resolution_x = {resolution[0]}
 scene.render.resolution_y = {resolution[1]}
-scene.render.engine = 'CYCLES'
-scene.cycles.samples = 32
+scene.render.engine = {engine!r}
+if {engine!r} == 'CYCLES':
+    scene.cycles.samples = 32
 scene.render.image_settings.file_format = 'PNG'
 scene.render.filepath = {out!r}
+
+radius = 4.0
+az = math.radians({azimuth})
+el = math.radians({elevation})
+cx = radius * math.sin(az) * math.cos(el)
+cy = -radius * math.cos(az) * math.cos(el)
+cz = radius * math.sin(el) + 0.5
+
+for obj in [o for o in bpy.data.objects if o.name.startswith("RenderCam")]:
+    bpy.data.objects.remove(obj, do_unlink=True)
+for c in [c for c in bpy.data.cameras if c.name.startswith("RenderCam")]:
+    bpy.data.cameras.remove(c)
+
 cam = bpy.data.cameras.new("RenderCam")
 cam_obj = bpy.data.objects.new("RenderCam", cam)
 scene.collection.objects.link(cam_obj)
 scene.camera = cam_obj
-cam_obj.location = (0, -4, 1.5)
-cam_obj.rotation_euler = (math.radians(75 + {rx}), math.radians({ry}), math.radians({rz}))
+cam_obj.location = (cx, cy, cz)
+
+direction = mathutils.Vector((0, 0, 0.5)) - mathutils.Vector((cx, cy, cz))
+rot_quat = direction.to_track_quat('-Z', 'Y')
+cam_obj.rotation_euler = rot_quat.to_euler()
+
 bpy.ops.render.render(write_still=True)
 """
             self._exec(code)
@@ -235,29 +256,25 @@ bpy.ops.render.render(write_still=True)
         return output_path
 
     def get_vertex_positions(self, object_name: str) -> list[list[float]]:
-        result = self._exec(f"""
-import bpy, json
+        return self._exec(f"""
+import bpy
 obj = bpy.data.objects.get({object_name!r})
 if obj and obj.type == 'MESH':
-    data = [[round(v.co.x,4), round(v.co.y,4), round(v.co.z,4)] for v in obj.data.vertices[:2000]]
+    __result__ = [[round(v.co.x,4), round(v.co.y,4), round(v.co.z,4)] for v in obj.data.vertices[:2000]]
 else:
-    data = []
-print("RESULT:" + json.dumps(data))
-""")
-        return self._parse_printed_result(result, [])
+    __result__ = []
+""") or []
 
     def get_topology_stats(self, object_name: str) -> dict[str, Any]:
-        result = self._exec(f"""
-import bpy, json
+        return self._exec(f"""
+import bpy
 obj = bpy.data.objects.get({object_name!r})
 if obj and obj.type == 'MESH':
     m = obj.data
-    data = {{"vertices": len(m.vertices), "edges": len(m.edges), "faces": len(m.polygons)}}
+    __result__ = {{"vertices": len(m.vertices), "edges": len(m.edges), "faces": len(m.polygons)}}
 else:
-    data = {{}}
-print("RESULT:" + json.dumps(data))
-""")
-        return self._parse_printed_result(result, {})
+    __result__ = {{}}
+""") or {}
 
     @staticmethod
     def _parse_printed_result(result: Any, default: Any) -> Any:

@@ -268,9 +268,76 @@ class OpenAIEvaluatorBackend(EvaluatorBackend):
         response = client.chat.completions.create(
             model=self.model,
             max_tokens=512,
+            response_format={"type": "json_object"},
             messages=[{"role": "user", "content": content}],
         )
         body = json.loads(response.choices[0].message.content)
+        return EvaluationResult(
+            overall_score=body["overall_score"],
+            visual_fidelity=body.get("visual_fidelity", 0.0),
+            topology_quality=body.get("topology_quality", 0.0),
+            depth_alignment=body.get("depth_alignment", 0.0),
+            vertex_accuracy=body.get("vertex_accuracy", 0.0),
+            feedback=body.get("feedback", []),
+            raw=body,
+        )
+
+
+# ------------------------------------------------------------------
+# Codex evaluator backend (uses imagegen CodexBackend.judge)
+# ------------------------------------------------------------------
+
+_EVAL_PROMPT = """\
+You are a 3-D render quality evaluator.
+{reference_note}
+The remaining image(s) are renders of a 3-D model to evaluate.
+Topology stats: {topo}
+Vertex count: {verts}
+
+Score each dimension from 0.0 to 1.0 and list up to 5 short actionable feedback items.
+"""
+
+_EVAL_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "overall_score":    {"type": "number"},
+        "visual_fidelity":  {"type": "number"},
+        "topology_quality": {"type": "number"},
+        "depth_alignment":  {"type": "number"},
+        "vertex_accuracy":  {"type": "number"},
+        "feedback":         {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["overall_score", "visual_fidelity", "topology_quality",
+                 "depth_alignment", "vertex_accuracy", "feedback"],
+    "additionalProperties": False,
+}
+
+
+class CodexEvaluatorBackend(EvaluatorBackend):
+    """Uses the Codex CLI (ChatGPT subscription) vision judge to score renders."""
+
+    def __init__(self, model: str | None = None):
+        from imagegen.backends import CodexBackend
+        self._codex = CodexBackend(model=model)
+
+    def evaluate(self, payload: RenderPayload, reference: dict[str, Any]) -> EvaluationResult:
+        images: list[Any] = []
+        reference_note = ""
+
+        if "image_path" in reference:
+            images.append(reference["image_path"])
+            reference_note = "Image 1 is the reference target. "
+
+        for img_path in payload.render_images[:4]:
+            images.append(img_path)
+
+        prompt = _EVAL_PROMPT.format(
+            reference_note=reference_note,
+            topo=payload.topology_stats or "unknown",
+            verts=len(payload.vertex_positions),
+        )
+
+        body = self._codex.judge(prompt, images, _EVAL_SCHEMA)
         return EvaluationResult(
             overall_score=body["overall_score"],
             visual_fidelity=body.get("visual_fidelity", 0.0),
@@ -314,3 +381,7 @@ class EvaluatorClient:
     @classmethod
     def from_openrouter(cls, api_key: str = "", model: str = "openai/gpt-4o") -> "EvaluatorClient":
         return cls(OpenAIEvaluatorBackend(api_key, model, openrouter=True))
+
+    @classmethod
+    def from_codex(cls, model: str | None = None) -> "EvaluatorClient":
+        return cls(CodexEvaluatorBackend(model))

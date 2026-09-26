@@ -1,6 +1,6 @@
 from . import secrets
 from .agent import BlenderAgent, AgentConfig, AgentTraits, HarnessTrace, ToolEvent, ScoreEvent
-from .emit import Emitter, NullEmitter
+from .emit import Emitter, NullEmitter, MongoSink
 from .evaluator import EvaluatorClient, EvaluationResult
 from .feedback import FeedbackAccessor, FeedbackCategory, FeedbackItem
 
@@ -14,6 +14,7 @@ __all__ = [
     "ScoreEvent",
     "Emitter",
     "NullEmitter",
+    "MongoSink",
     "EvaluatorClient",
     "EvaluationResult",
     "FeedbackAccessor",

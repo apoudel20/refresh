@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from io import TextIOWrapper
 from pathlib import Path
@@ -44,13 +45,18 @@ class Emitter:
                 self._sinks.append(sys.stdout)
             elif s == "stderr":
                 self._sinks.append(sys.stderr)
-            elif isinstance(s, (str, Path)):
+            elif isinstance(s, (str, Path)) and not str(s).startswith("mongodb"):
                 p = Path(s)
                 p.parent.mkdir(parents=True, exist_ok=True)
                 fh = open(p, "a", encoding="utf-8")
                 self._sinks.append(fh)
                 self._owned.append(fh)
+            elif isinstance(s, str) and s.startswith("mongodb"):
+                mongo = MongoSink(s)
+                self._sinks.append(mongo)
+                self._owned.append(mongo)
             else:
+                # Custom sink object (e.g. MongoSink instance) — caller owns lifecycle
                 self._sinks.append(s)
 
         if not self._sinks:
@@ -142,6 +148,79 @@ class Emitter:
 
     def run_end(self, trace_summary: dict[str, Any]) -> None:
         self.emit("run_end", **trace_summary)
+
+
+# ── MongoDB sink ───────────────────────────────────────────────────────────
+
+class MongoSink:
+    """
+    Duck-type TextIO sink that inserts each NDJSON line as a document into
+    MongoDB.  All events from one Emitter session share a single run_id so
+    the frontend can query a full run with one filter.
+
+    Collections written:
+      events  — one document per event, with run_id attached
+      runs    — one document per run, upserted on run_start / stop events
+    """
+
+    def __init__(
+        self,
+        uri: str,
+        db_name: str = "blender_agent",
+        run_id: str | None = None,
+    ):
+        from pymongo import MongoClient
+        client = MongoClient(uri)
+        db = client[db_name]
+        self._events = db["events"]
+        self._runs   = db["runs"]
+        self.run_id  = run_id or str(uuid.uuid4())
+
+    def write(self, text: str) -> None:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                doc = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            doc["run_id"] = self.run_id
+            self._events.insert_one(doc)
+            self._sync_runs(doc)
+
+    def _sync_runs(self, doc: dict[str, Any]) -> None:
+        """Keep the runs summary collection up to date."""
+        event = doc.get("event")
+        if event == "run_start":
+            self._runs.update_one(
+                {"_id": self.run_id},
+                {"$set": {
+                    "goal":       doc.get("goal"),
+                    "model":      doc.get("model"),
+                    "backend":    doc.get("backend"),
+                    "traits":     doc.get("traits"),
+                    "started_at": doc.get("ts"),
+                    "status":     "running",
+                }},
+                upsert=True,
+            )
+        elif event == "stop":
+            self._runs.update_one(
+                {"_id": self.run_id},
+                {"$set": {
+                    "status":      "completed",
+                    "stop_reason": doc.get("reason"),
+                    "final_score": doc.get("final_score"),
+                    "ended_at":    doc.get("ts"),
+                }},
+            )
+
+    def flush(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
 
 
 # ── Default no-op emitter ──────────────────────────────────────────────────
