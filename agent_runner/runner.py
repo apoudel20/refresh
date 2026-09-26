@@ -4,8 +4,7 @@ Standalone agent runner.  Single entry point: run(model_config, goal, ...).
 from agent_runner import run, ModelConfig, AgentTraits
 
 result, trace = run(
-    ModelConfig(model="gpt-4o-mini", backend="openai", evaluator_backend="claude"),
-    goal="Reconstruct Suzanne the monkey head",
+    ModelConfig(),                          # Claude Sonnet + Claude evaluator by default
     reference_image="/tmp/refs/front.png",
     workspace="/tmp/my_run",
 )
@@ -39,14 +38,14 @@ class ModelConfig:
     """
 
     # ── Agent LLM ──────────────────────────────────────────────────
-    model: str = "gpt-4o-mini"
-    backend: Literal["openai", "openrouter", "anthropic"] = "openai"
+    model: str = "claude-sonnet-4-6"
+    backend: Literal["openai", "openrouter", "anthropic"] = "anthropic"
     api_key: str = ""           # falls back to env var if empty
     max_tokens: int = 4096
 
     # ── Evaluator ──────────────────────────────────────────────────
-    evaluator_backend: Literal["openai", "openrouter", "claude", "codex", "http"] = "openai"
-    evaluator_model: str = "gpt-4o"
+    evaluator_backend: Literal["openai", "openrouter", "claude", "codex", "http"] = "claude"
+    evaluator_model: str = "claude-sonnet-4-6"
     evaluator_api_key: str = ""
     evaluator_url: str = ""     # required only for evaluator_backend="http"
 
@@ -106,9 +105,12 @@ def _build_emitter(
     return Emitter(*sinks) if sinks else Emitter("stdout")
 
 
+DEFAULT_GOAL = "Reproduce the reference images as a 3D blend model"
+
+
 def run(
     model_config: ModelConfig,
-    goal: str,
+    goal: str = DEFAULT_GOAL,
     reference_image: str | None = None,
     reference_mesh: str | None = None,
     traits: AgentTraits | None = None,
