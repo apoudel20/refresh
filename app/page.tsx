@@ -395,14 +395,13 @@ export default function Home() {
         {error && <div className="inline-error">{error}</div>}
       </div> : <div className="studio-layout">
         <div className="studio-main"><div className="studio-title"><div><span className="kicker">{stage === "processing" ? "BASE MODEL" : "MODEL WORKSPACE"}</span><h1>{project?.modelName || (stage === "processing" ? "Generating model" : "3D model")}</h1></div><div className="studio-status">{project?.status === "error" ? "Service unavailable" : stage === "processing" ? "Generating model" : modelReady ? "Sculpting ready" : "Waiting for model"}</div></div>
-          <div className="model-stage"><ModelViewport modelUrl={modelUrl} projectKey={project?.id || "none"} handSample={handSampleRef} onSelection={handleSelection} onModelEdited={handleModelEdited} onModelReady={setModelReady} autoRotate={false}/>
+          <div className="studio-sculpt-field"><div className="model-stage"><HandCamera enabled overlay onSample={handleSample}/><ModelViewport modelUrl={modelUrl} projectKey={project?.id || "none"} handSample={handSampleRef} onSelection={handleSelection} onModelEdited={handleModelEdited} onModelReady={setModelReady} autoRotate={false}/>
             {!modelUrl && <button className="load-model" onClick={() => modelRef.current?.click()}>Load generated .glb</button>}
             {lastSelection && <div className="selection-chip">Region selected · {lastSelection.faces.length} mesh faces <span>{refining ? "Refining…" : ""}</span></div>}
-          </div>
+          </div></div>
           <div className="model-toolbar"><span>{project?.references.length || 0} captured views</span><span className="tool-divider"/><button onClick={() => modelRef.current?.click()}>Load .glb</button><span className="tool-spacer"/><span>{handSample ? `Hand distance ${Math.round(handSample.distanceMm)} mm` : "Pinch and move to sculpt"}</span></div>
           <div className="iteration-strip">{(project?.iterations?.length ? project.iterations : modelUrl ? [{ label: "Iteration 1 · Base model", modelUrl, createdAt: project?.updatedAt || 0 }] : []).map((item, index) => <span key={`${item.label}-${index}`} className="iteration-item"><i>{index + 1}</i>{item.label}{index < (project?.iterations?.length || 1) - 1 && <b>→</b>}</span>)}</div>
           {error && <div className="inline-error">{error}<button onClick={() => setError("")}>Dismiss</button></div>}
-          {modelReady && stage === "studio" && <div className="studio-hand-camera"><div className="studio-hand-label"><span>LIVE HAND PREVIEW</span><small>Pinch and move here to sculpt the model above</small></div><HandCamera enabled onSample={handleSample}/></div>}
         </div>
         <aside className="process-panel"><details className="agent-graph"><summary><span className="graph-mark">⌘</span><span><b>Agent team</b><small>Coordinator · model · refinement</small></span><i>⌄</i></summary><div className="graph-nodes"><span>Coordinator</span><div><i/>Reference views <i/>Geometry <i/>Similarity</div><small>Tasks split by the reconstruction service</small></div></details>
           <details className="thinking-trace" open><summary><span className="thinking-icon">✳</span><b>Thinking</b><small>{project?.events?.length || 0} updates</small><i>⌄</i></summary>

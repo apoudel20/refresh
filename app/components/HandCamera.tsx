@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { HandSample } from "./ModelViewport";
 
-type Props = { onSample: (sample: HandSample | null) => void; enabled: boolean; compact?: boolean; captureMode?: boolean; onCapture?: (file: File) => void };
+type Props = { onSample: (sample: HandSample | null) => void; enabled: boolean; compact?: boolean; captureMode?: boolean; overlay?: boolean; onCapture?: (file: File) => void };
 const WASM_ROOT = "/mediapipe/wasm";
 const MODEL_PATH = "/assets/hand_landmarker.task";
 
@@ -19,7 +19,7 @@ function oneEuro(state: FilterState | null, value: number, time: number) {
   return { state: { raw: value, value: filtered, derivative, time }, value: filtered };
 }
 
-export default function HandCamera({ onSample, enabled, compact = false, captureMode = false, onCapture }: Props) {
+export default function HandCamera({ onSample, enabled, compact = false, captureMode = false, overlay = false, onCapture }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const landmarkerRef = useRef<{ detectForVideo: (video: HTMLVideoElement, timestamp: number) => { landmarks?: Array<Array<{ x: number; y: number; z: number }>> }; close: () => void } | null>(null);
@@ -124,7 +124,7 @@ export default function HandCamera({ onSample, enabled, compact = false, capture
     const attempt = ++attemptRef.current;
     setStatus("loading"); setTracking("idle"); setMessage("Allow camera access to capture views and track your hand.");
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: overlay ? 360 : 480 }, ...(overlay ? { aspectRatio: { ideal: 16 / 9 } } : {}) }, audio: false });
       if (attempt !== attemptRef.current) { stream.getTracks().forEach(track => track.stop()); return; }
       streamRef.current = stream;
       const video = videoRef.current;
@@ -172,6 +172,14 @@ export default function HandCamera({ onSample, enabled, compact = false, capture
       {status === "ready" && tracking === "error" && <button className="capture-tracking-retry" onClick={() => void start()}>Retry hand tracking</button>}
       {handFound && handPoint && <span className={`capture-hand-point${pinching ? " pinching" : ""}`} style={{ left: `${handPoint.x * 100}%`, top: `${handPoint.y * 100}%` }} />}
     </div><div className="capture-camera-controls"><div><b>Capture camera views</b><small>{tracking === "error" ? "Camera capture is available; retry hand tracking above." : tracking === "loading" ? "Hand tracking is starting. Add several angles, then build the base model." : "Add several angles, then build the base model."}</small></div><button className="primary-button" onClick={captureView} disabled={status !== "ready"}>Capture view <span>＋</span></button></div>
+  </div>;
+
+  if (overlay) return <div className="hand-camera-overlay">
+    <video ref={videoRef} autoPlay playsInline muted className="mirrored" />
+    {handFound && handPoint && <span className={`hand-cursor-dot${pinching ? " pinching" : ""}`} style={{ left: `${handPoint.x * 100}%`, top: `${handPoint.y * 100}%` }} />}
+    <span className={`overlay-camera-status${handFound ? " found" : ""}`}><i />{pinching ? "Pinch active" : handFound ? `Hand detected · ${distance} mm` : tracking === "loading" ? "Loading hand tracking…" : tracking === "error" ? "Tracking unavailable" : status === "error" ? "Camera access needed" : "Show your hand"}</span>
+    {status !== "ready" && <div className="overlay-camera-message">{status === "loading" ? "Starting camera…" : status === "error" ? <button onClick={start}>Allow or retry camera</button> : null}</div>}
+    {status === "ready" && tracking === "error" && <button className="overlay-camera-retry" onClick={() => void start()}>Retry tracking</button>}
   </div>;
 
   return <div className={`hand-panel${compact ? " compact" : ""}`}>

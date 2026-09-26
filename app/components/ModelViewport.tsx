@@ -87,11 +87,12 @@ export default function ModelViewport({ modelUrl, handSample, onSelection, onMod
         const { OrbitControls } = await import("three/addons/controls/OrbitControls.js");
         if (!alive || !canvasRef.current || !hostRef.current) return;
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color("#f4f8fc");
+        scene.background = null;
         scene.add(new THREE.HemisphereLight(0xeaf5ff, 0x8192a5, 2.2));
         const key = new THREE.DirectionalLight(0xffffff, 2.1); key.position.set(3, 5, 5); scene.add(key);
         const camera = new THREE.PerspectiveCamera(38, 1, 0.01, 100);
-        renderer = new THREE.WebGLRenderer({ canvas: canvasRef.current, antialias: true, alpha: false, preserveDrawingBuffer: true });
+        renderer = new THREE.WebGLRenderer({ canvas: canvasRef.current, antialias: true, alpha: true, preserveDrawingBuffer: true });
+        renderer.setClearColor(0x000000, 0);
         renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
         renderer.outputColorSpace = THREE.SRGBColorSpace;
         renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -215,7 +216,13 @@ export default function ModelViewport({ modelUrl, handSample, onSelection, onMod
                 line.renderOrder = 20; scene.add(line);
               }
             }
-            if ((!sample.pinching || !grab) && brush) brush.visible = false;
+            if (brush && model) {
+              if (sample && !sample.pinching) {
+                const hoverHit = raycaster.intersectObject(model, true)[0];
+                if (hoverHit) { brush.position.copy(hoverHit.point); brush.visible = true; }
+                else brush.visible = false;
+              } else if (!sample || !grab) brush.visible = false;
+            }
             if (!sample.pinching && wasPinching) void finishSelection(THREE);
             wasPinching = sample.pinching;
           } else if (!sample && wasPinching) { void finishSelection(THREE); wasPinching = false; if (brush) brush.visible = false; }
@@ -234,6 +241,6 @@ export default function ModelViewport({ modelUrl, handSample, onSelection, onMod
     <canvas ref={canvasRef} aria-label="Generated 3D model viewport" />
     {!modelUrl && <div className="model-empty"><span className="empty-ring"/><b>Waiting for generated model</b><small>The model from this project’s reconstruction run will appear here.</small></div>}
     {error && <div className="model-error">{error}</div>}
-    {ready && <div className="model-help">Drag to orbit <span>·</span> Scroll to zoom <span>·</span> Pinch and move to sculpt</div>}
+    {ready && <div className="model-help">Drag to orbit <span>·</span> Scroll to zoom <span>·</span> Move hand behind the model to position cursor <span>·</span> Pinch to sculpt</div>}
   </div>;
 }
