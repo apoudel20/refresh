@@ -115,14 +115,11 @@ def run(agent: "BlenderAgent", goal: str, reference: dict[str, Any], traits: "Ag
 
     max_turns = int(os.getenv("REFRESH_AGENT_MAX_TURNS", "0"))  # 0 = no turn limit
     cmd = [exe, "-p",
+           "--dangerously-skip-permissions",
            "--output-format", "stream-json", "--verbose",
-           "--mcp-config", str(mcp_cfg), "--strict-mcp-config",
-           "--tools", ",".join(BUILTIN_TOOLS),
-           "--allowedTools", ",".join(list(BUILTIN_TOOLS) + [PREFIX + n for n in allowed]),
-           "--permission-mode", "dontAsk",
+           "--mcp-config", str(mcp_cfg),
            "--append-system-prompt", traits.build_system_prompt() + CLAUDE_CODE_NOTES,
-           "--no-session-persistence",
-           "--disable-slash-commands"]
+           "--no-session-persistence"]
     for d in _read_dirs(reference, ws):
         cmd += ["--add-dir", d]
     if max_turns > 0:
@@ -268,17 +265,25 @@ def run(agent: "BlenderAgent", goal: str, reference: dict[str, Any], traits: "Ag
 
 CLAUDE_CODE_NOTES = (
     "\n\nYou are running headless inside the Refresh harness: there is no user to ask, so never wait for input. "
-    "Your tools are the `refresh` MCP tools (Blender, imagegen, scoring) plus Read for looking at image files "
-    "(the reference photo, your renders, generated images) and Glob for listing files; Read cannot open "
-    "directories. You have no shell and cannot edit files directly; "
-    "everything happens in the live Blender scene through the tools. When you finish, reply with a short summary "
-    "of what you built and what still differs from the reference."
+    "You have Claude Code's tools (shell, files, web, skills), the `refresh` MCP tools (Blender through the "
+    "harness, imagegen, `evaluate_render` scoring) and any other MCP servers configured on this machine. Keep all "
+    "files you write inside your folder. Build the model in the live Blender scene: the harness snapshots that "
+    "scene when you finish, so work saved only to files is not handed on. Never quit Blender, open another file "
+    "in it, or reset its scene. When you finish, reply with a short summary of what you built and what still "
+    "differs from the reference."
 )
 
 
 def _prompt(goal: str, reference: dict[str, Any], traits: "AgentTraits", ws: Path) -> str:
-    lines = [f"Goal: {goal}", f"Workspace directory for files you create (empty at the start): {ws}",
-             "The team's work so far is already loaded in the Blender scene; there are no model files to import."]
+    lines = [f"Goal: {goal}",
+             f"Your folder: {ws}",
+             "Work only inside your folder: write every script to scripts/, debug output, logs and scratch files to "
+             "debug/, your own renders and images to renders/, and .blend checkpoints to blend/ (save them with "
+             "bpy.ops.wm.save_as_mainfile(filepath=..., copy=True); copy=True matters). Do not create, change or "
+             "delete anything outside your folder, except reading the reference photo and other files you need.",
+             "The harness saved the scene you were handed as blend/start.blend and saves blend/end.blend when you "
+             "finish. The team's work so far is already loaded in the live Blender scene; there are no model files "
+             "to import."]
     if reference.get("image_path"):
         lines.append(f"Reference photo (the target): {reference['image_path']} -- look at it first with Read.")
     views = [v for v in reference.get("extra_views", []) if v]

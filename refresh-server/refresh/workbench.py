@@ -106,8 +106,22 @@ class BlenderWorkbench:
         info = {"role": role, "structure_hash": ctx["structure_hash"], "node_id": ctx["node_id"], "gen": ctx["gen"],
                 "started": time.time()}
         (node_dir / "node.json").write_text(json.dumps(info))  # lets the dashboard label live renders
+        for sub_dir in ("scripts", "debug", "renders", "blend"):
+            (node_dir / sub_dir).mkdir(exist_ok=True)
+        # a readable name for the agent's folder: agents/g0_1a2b3c4d_n1_geometry -> nodes/<cache key>
+        alias = self.run.dir / "agents" / f"g{ctx['gen']}_{ctx['structure_hash'][:8]}_{ctx['node_id']}_{role}"
+        try:
+            alias.parent.mkdir(exist_ok=True)
+            if not alias.exists():
+                alias.symlink_to(Path("..") / "nodes" / node_dir.name, target_is_directory=True)
+        except OSError:
+            pass
         with BLENDER_LOCK:
             self._load_inputs(inputs)
+            try:  # the scene this agent was handed, openable in Blender
+                self.connector.save_blend(str(node_dir / "blend" / "start.blend"))
+            except Exception:
+                pass
             ctx["log"]("agent_started", role=role, tools=genome.get("tools", []))
             upstream = "; ".join(i.get("summary", "") for i in inputs if not i["ref"].startswith("task:"))
             reference = {"image_path": self.run.reference, "extra_views": self.run.extra_views,
@@ -136,8 +150,12 @@ class BlenderWorkbench:
                     raise ConnectionError(f"Agent model authentication failed ({settings.agent_backend}): {exc}") from exc
             finally:
                 emitter.close()
-            snap = node_dir / "node.blend"
+            snap = node_dir / "node.blend"  # hand-off to the next agent (model objects only)
             self.connector.snapshot(str(snap))
+            try:  # the full scene this agent left, openable in Blender
+                self.connector.save_blend(str(node_dir / "blend" / "end.blend"))
+            except Exception:
+                pass
             try:  # work-in-progress model for the dashboard, before the team is scored
                 self.connector.export_glb(str(node_dir / "node.glb"))
                 (node_dir / "node.json").write_text(json.dumps({**info, "t": time.time()}))
